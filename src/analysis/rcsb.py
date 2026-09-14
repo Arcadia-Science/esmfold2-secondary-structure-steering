@@ -98,6 +98,16 @@ ENGINEERED_SCAFFOLD_KEYWORDS = (
 )
 
 CIF_CACHE = paths.REFERENCE / "cifs"
+SEARCH_HITS = "natural_binder_search_hits.json"
+"""Frozen search results.
+
+Recording the result sets, rather than only the query that produced them, is
+what pins the set. The query is already capped by release date, but the RCSB
+recomputes its sequence-identity clusters over the whole present-day PDB, so
+which entity represents a cluster drifts under a live query and does not under
+a recorded one. When this file is present the build reads it; when it is
+absent the build queries the live API and writes it.
+"""
 
 
 @dataclass(frozen=True)
@@ -509,6 +519,56 @@ def pair_rows(
     return pd.DataFrame(rows)
 
 
+def search_hits(progress: bool = True) -> tuple[list[str], set[str], int]:
+    """The in-range entities, the cluster representatives, and the cluster count.
+
+    Read from the recorded result sets if they are on disk, otherwise fetched
+    from the live API and recorded. Reading them is what makes a rebuild
+    reproducible; fetching them is what makes the set derivable in the first
+    place.
+    """
+    recorded = paths.reference_table(SEARCH_HITS)
+    if recorded.is_file():
+        payload = json.loads(recorded.read_text())
+        if progress:
+            print(
+                f"using the recorded search results in {recorded.name}, "
+                f"snapshot {payload['snapshot_release_date']}"
+            )
+        return (
+            list(payload["hits"]),
+            set(payload["representatives"]),
+            int(payload["clusters"]),
+        )
+
+    if progress:
+        print(f"querying RCSB, released on or before {SNAPSHOT_RELEASE_DATE}...")
+    all_hits = post_json(SEARCH_URL, search_body(False))
+    hits = [hit["identifier"] for hit in all_hits["result_set"]]
+    grouped = post_json(SEARCH_URL, search_body(True))
+    representatives = {hit["identifier"] for hit in grouped["result_set"]}
+    n_clusters = int(grouped["group_by_count"])
+    if progress:
+        print(
+            f"  {len(hits)} in-range entities, {len(representatives)} cluster "
+            f"representatives of {n_clusters} clusters"
+        )
+    recorded.parent.mkdir(parents=True, exist_ok=True)
+    recorded.write_text(
+        json.dumps(
+            {
+                "snapshot_release_date": SNAPSHOT_RELEASE_DATE,
+                "clusters": n_clusters,
+                "representatives": sorted(representatives),
+                "hits": hits,
+            },
+            indent=2,
+        )
+        + "\n"
+    )
+    return hits, representatives, n_clusters
+
+
 def build(limit: int = 0, progress: bool = True) -> pd.DataFrame:
     """Build the reference set from the RCSB and write it to ``data/reference``.
 
@@ -527,17 +587,7 @@ def build(limit: int = 0, progress: bool = True) -> pd.DataFrame:
         json.dumps(search_body(False), indent=2) + "\n"
     )
 
-    if progress:
-        print(f"querying RCSB, released on or before {SNAPSHOT_RELEASE_DATE}...")
-    all_hits = post_json(SEARCH_URL, search_body(False))
-    hits = [hit["identifier"] for hit in all_hits["result_set"]]
-    grouped = post_json(SEARCH_URL, search_body(True))
-    representatives = {hit["identifier"] for hit in grouped["result_set"]}
-    if progress:
-        print(
-            f"  {len(hits)} in-range entities, {len(representatives)} cluster "
-            f"representatives of {grouped['group_by_count']} clusters"
-        )
+    hits, representatives, n_clusters = search_hits(progress=progress)
 
     if limit:
         representatives = set(sorted(representatives)[:limit])
@@ -614,7 +664,7 @@ def build(limit: int = 0, progress: bool = True) -> pd.DataFrame:
         "snapshot_release_date": SNAPSHOT_RELEASE_DATE,
         "in_range_entities": len(hits),
         "in_range_entries": len(pdb_ids),
-        "clusters": int(grouped["group_by_count"]),
+        "clusters": n_clusters,
         "cluster_representatives": int((pairs["cluster_representative"] == 1).sum()),
         "measured": int((pairs["measured"] == 1).sum()),
         "excluded_design_like": int(

@@ -83,3 +83,68 @@ def test_the_vanilla_schedule_is_exactly_what_broke_it() -> None:
     assert campaign._empty_container_paths(unrouted) == [
         "schedule.waypoints[0].weights"
     ]
+
+
+def test_force_rerun_reads_the_documented_variable(monkeypatch) -> None:
+    from analysis import deposit
+
+    monkeypatch.delenv(deposit.FORCE_RERUN_ENV, raising=False)
+    assert deposit.force_rerun() is False
+    monkeypatch.setenv(deposit.FORCE_RERUN_ENV, "1")
+    assert deposit.force_rerun() is True
+    monkeypatch.setenv(deposit.FORCE_RERUN_ENV, "true")
+    assert deposit.force_rerun() is False, "only the literal 1 should arm a destructive path"
+
+
+def test_the_archive_is_its_own_marker(tmp_path) -> None:
+    """A half-finished download must not look like a complete one."""
+    from analysis import deposit
+
+    artifact = deposit.DataArtifact("thing.zip", tmp_path, "a thing")
+    assert artifact.is_fetched() is False
+    (tmp_path / "thing.partial").write_bytes(b"incomplete")
+    assert artifact.is_fetched() is False, "a .partial must not satisfy the gate"
+    artifact.archive_path.write_bytes(b"complete")
+    assert artifact.is_fetched() is True
+
+
+def test_packaging_round_trips_through_extraction(tmp_path) -> None:
+    from analysis import deposit
+
+    source = tmp_path / "nested"
+    source.mkdir()
+    (source / "table.parquet").write_bytes(b"pretend parquet")
+    (tmp_path / "top.json").write_text("{}")
+
+    artifact = deposit.DataArtifact("bundle.zip", tmp_path, "a bundle")
+    artifact.package([source / "table.parquet", tmp_path / "top.json"])
+
+    import zipfile
+
+    with zipfile.ZipFile(artifact.archive_path) as archive:
+        assert sorted(archive.namelist()) == ["nested/table.parquet", "top.json"]
+
+
+def test_clear_generated_spares_the_archives(tmp_path, monkeypatch) -> None:
+    """FORCE_RERUN skips the fetch, so deleting a download would be gratuitous."""
+    from analysis import deposit, paths
+
+    reference, campaigns = tmp_path / "reference", tmp_path / "campaigns"
+    for directory in (reference, campaigns):
+        directory.mkdir()
+        (directory / ".gitkeep").touch()
+    (reference / deposit.REFERENCE_ARCHIVE).write_bytes(b"archive")
+    (reference / "natural_binder_composition.csv").write_text("derived")
+    (campaigns / deposit.DESIGN_ARCHIVE).write_bytes(b"archive")
+    (campaigns / "egfr_d3__vanilla").mkdir()
+
+    monkeypatch.setattr(paths, "REFERENCE", reference)
+    monkeypatch.setattr(paths, "CAMPAIGNS", campaigns)
+    removed = deposit.clear_generated()
+
+    assert (reference / deposit.REFERENCE_ARCHIVE).is_file()
+    assert (campaigns / deposit.DESIGN_ARCHIVE).is_file()
+    assert (reference / ".gitkeep").is_file()
+    assert not (reference / "natural_binder_composition.csv").exists()
+    assert not (campaigns / "egfr_d3__vanilla").exists()
+    assert len(removed) == 2

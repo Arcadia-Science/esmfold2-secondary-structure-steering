@@ -4,7 +4,8 @@ This is the only module that talks to a GPU. Every entry point checks the
 filesystem first and refuses to redo work:
 
 - :func:`ensure` generates only the campaigns whose composition table is
-  missing, and is what the notebook calls when ``USE_MODAL=1``.
+  missing, and is what the notebook calls under ``FORCE_RERUN=1``. Without
+  that, the notebook fetches the deposited tables and never comes here.
 - :func:`spawn_campaign` reuses an existing manifest rather than launching a
   second time, so an interrupted session resumes by collecting.
 - :func:`collect_campaign` refuses to write a partial table.
@@ -22,7 +23,6 @@ this module to run the analysis on your own targets.
 
 from __future__ import annotations
 import json
-import os
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -48,7 +48,6 @@ from analysis.targets import (
 app = typer.Typer(pretty_exceptions_enable=False, add_completion=False)
 
 REMOTE_CLASS = "ESMFold2DesignModal"
-USE_MODAL_ENV = "USE_MODAL"
 POLL_SECONDS = 60
 
 ROUTED_KEYS = ("complex_pdb", "step_trace", "schedule")
@@ -329,16 +328,6 @@ def _resolve(call: Any) -> str:
     except Exception as error:  # noqa: BLE001
         return f"{type(error).__name__}: {error}"
     return "ok"
-
-
-def use_modal() -> bool:
-    """Whether the caller has opted in to spending GPU time.
-
-    Generation is opt-in rather than automatic because it costs real money and
-    will not reproduce the deposited designs. The notebook renders from the
-    deposit unless ``USE_MODAL=1`` is set in the environment.
-    """
-    return os.environ.get(USE_MODAL_ENV, "") == "1"
 
 
 def ensure(

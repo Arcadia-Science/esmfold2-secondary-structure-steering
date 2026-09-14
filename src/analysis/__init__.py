@@ -10,6 +10,8 @@ Layout:
 - :mod:`analysis.schedule` holds the per-step weight schedules that turn a term
   into an arm.
 - :mod:`analysis.loss_trace` reads and writes the per-step loss logs.
+- :mod:`analysis.deposit` fetches the deposited inputs, and holds the one
+  switch that regenerates them from source instead.
 - :mod:`analysis.confidence` splits ESMFold2's per-residue pLDDT by chain, so
   binder confidence can be read separately from the complex it sits in.
 - :mod:`analysis.artifacts` is the file-exists gate the notebook reads through.
@@ -37,6 +39,7 @@ from analysis import (
     artifacts,
     composition,
     confidence,
+    deposit,
     loss_trace,
     paths,
     reference,
@@ -50,6 +53,7 @@ __all__ = [
     "artifacts",
     "composition",
     "confidence",
+    "deposit",
     "loss_trace",
     "paths",
     "reference",

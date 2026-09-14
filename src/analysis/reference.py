@@ -89,12 +89,13 @@ def table(name: str) -> pd.DataFrame:
     if local.is_file():
         return pd.read_csv(local)
 
-    from analysis import rcsb
+    from analysis import deposit, rcsb
 
+    if not deposit.force_rerun():
+        deposit.REFERENCE_INPUTS.fetch()
     print(
-        f"{local} is absent, so rebuilding the reference set from the RCSB. "
-        f"This needs no GPU but downloads and measures a few thousand "
-        f"structures, so budget tens of minutes."
+        f"{local} is absent, so building the reference set. This measures a "
+        f"few thousand structures and needs no GPU, so budget tens of minutes."
     )
     rcsb.build()
     if not local.is_file():
