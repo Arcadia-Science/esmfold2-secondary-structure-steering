@@ -45,6 +45,10 @@ class Composition:
     sheet_fraction: float
     coil_fraction: float
     n_residues: int
+    n_helix: int
+    n_sheet: int
+    n_coil: int
+    max_residue_gap: int
 
     @property
     def helix_percent(self) -> float:
@@ -102,13 +106,24 @@ def assign(backbone: Backbone) -> np.ndarray:
 
 
 def composition(backbone: Backbone) -> Composition:
-    """Collapse per-residue labels to fractions."""
+    """Collapse per-residue labels to fractions and counts.
+
+    ``max_residue_gap`` is the largest jump in author residue numbering across
+    the labelled residues. It is 1 for a chain with no break, and larger where
+    the model is missing residues, which is how an experimental structure
+    advertises disorder.
+    """
     labels = assign(backbone)
+    gaps = np.diff(backbone.res_ids)
     return Composition(
         helix_fraction=float(np.mean(labels == "H")),
         sheet_fraction=float(np.mean(labels == "E")),
         coil_fraction=float(np.mean(labels == "-")),
         n_residues=int(len(labels)),
+        n_helix=int((labels == "H").sum()),
+        n_sheet=int((labels == "E").sum()),
+        n_coil=int((labels == "-").sum()),
+        max_residue_gap=int(gaps.max()) if len(gaps) else 0,
     )
 
 

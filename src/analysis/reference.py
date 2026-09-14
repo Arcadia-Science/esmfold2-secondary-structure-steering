@@ -6,17 +6,21 @@ job is to bind something else, so the baseline is the small chain of a natural
 heterodimer: a protein that is known to bind a partner, in a solved structure of
 that complex.
 
-Unlike a design campaign, this set is reproducible. It comes from a single RCSB
+Unlike a design campaign, this set is reproducible. It comes from one RCSB
 Search API query and public coordinates, with no GPU and no stochastic
-optimization, so rebuilding it is legitimate. It is merely slow, on the order of
-tens of minutes to download and measure a few thousand structures. So the
-loading order is:
+optimization, so rebuilding it is legitimate rather than approximate. It is
+merely slow, on the order of tens of minutes. So the loading order is:
 
-1. Read the table from ``data/reference`` if it is already there.
-2. Otherwise download it from the deposit, which is what a reader gets.
-3. Rebuild it from RCSB only when asked explicitly, via ``build=True``.
+1. Read the table from ``data/reference`` if it is there, which it is: the
+   tables are tracked in this repository.
+2. Otherwise rebuild it from the RCSB with :func:`analysis.rcsb.build`, which
+   replays the recorded query against a pinned release-date snapshot and
+   measures every structure through :mod:`analysis.secondary_structure`.
 
-The notebook uses step 1 or 2 and never step 3.
+There is deliberately no third path through a deposit download. A set that can
+be rebuilt from a recorded query should be rebuilt, not fetched, and building
+it here rather than in a script is what keeps the reference set measured by the
+same DSSP code as the designs.
 """
 
 from __future__ import annotations
@@ -35,10 +39,7 @@ QUERY_RECORD = "natural_binder_query.json"
 
 DEPOSIT_BASE = "https://zenodo.org/records/PENDING/files"
 
-BUILD_COMMAND = (
-    "replay the RCSB Search API query recorded in "
-    f"data/reference/{QUERY_RECORD}"
-)
+BUILD_COMMAND = "python -c 'from analysis import rcsb; rcsb.build()'"
 
 BINDER_LENGTH_MIN = 60
 BINDER_LENGTH_MAX = 200
@@ -75,32 +76,43 @@ def fetch(name: str) -> Path:
     return destination
 
 
-def table(name: str, build: bool = False) -> pd.DataFrame:
-    """Load one reference table, fetching from the deposit if it is absent.
+def table(name: str) -> pd.DataFrame:
+    """Load one reference table, building it from the RCSB if it is absent.
 
-    Set ``build`` to rebuild from RCSB instead of fetching. That path is never
-    taken by the notebook.
+    The tables are tracked in this repository, so the usual path is the first
+    branch. The second exists so the set is reconstructible rather than merely
+    downloadable: :func:`analysis.rcsb.build` runs the recorded query and
+    measures every structure through :mod:`analysis.secondary_structure`, the
+    same code that measures the designs.
     """
     local = paths.reference_table(name)
     if local.is_file():
         return pd.read_csv(local)
-    if build:
-        raise NotImplementedError(
-            f"Rebuild is a separate script rather than an import, to keep the "
-            f"notebook off long-running network work. Run:\n    {BUILD_COMMAND}\n"
-            f"then re-read {local}"
+
+    from analysis import rcsb
+
+    print(
+        f"{local} is absent, so rebuilding the reference set from the RCSB. "
+        f"This needs no GPU but downloads and measures a few thousand "
+        f"structures, so budget tens of minutes."
+    )
+    rcsb.build()
+    if not local.is_file():
+        raise FileNotFoundError(
+            f"the rebuild finished without writing {local}, which means {name!r} "
+            f"is not one of the tables analysis.rcsb.build produces"
         )
-    return pd.read_csv(fetch(name))
+    return pd.read_csv(local)
 
 
-def composition(build: bool = False) -> pd.DataFrame:
+def composition() -> pd.DataFrame:
     """Per-binder secondary-structure composition for the natural set."""
-    return table(COMPOSITION_TABLE, build=build)
+    return table(COMPOSITION_TABLE)
 
 
-def pairs(build: bool = False) -> pd.DataFrame:
+def pairs() -> pd.DataFrame:
     """One row per natural binder-target pair, with covariates."""
-    return table(PAIRS_TABLE, build=build)
+    return table(PAIRS_TABLE)
 
 
 def is_available() -> bool:
