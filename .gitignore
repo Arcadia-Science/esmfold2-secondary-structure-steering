@@ -205,10 +205,12 @@ data/derived/*
 # The composition table and the query record are small and are the inputs the
 # notebook needs, so they are tracked and the pub renders from a fresh clone
 # with no deposit. The 4 MB per-entity pairs table stays deposit-only.
+# Nothing here is tracked. The reference set is derived from a recorded RCSB
+# query and public coordinates, so a reader reproduces it rather than receiving
+# it: analysis.rcsb.build runs when the table is absent. Shipping it would mean
+# shipping something the notebook can and should derive.
 data/reference/*
 !data/reference/.gitkeep
-!data/reference/natural_binder_composition.csv
-!data/reference/natural_binder_query.json
 
 # Jupyter real-time-collaboration state, written by the server when a client
 # opens a notebook. Local session bookkeeping, not a project artifact.
