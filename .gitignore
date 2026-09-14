@@ -194,6 +194,12 @@ data/campaigns/*/*
 !data/campaigns/*/composition.parquet
 !data/campaigns/*/protocol.json
 !data/campaigns/*/step_trace.parquet
+# The per-design results table is 32 kB and carries the designed sequences,
+# which are the most reusable output here, so it is tracked. Its CSV twin is
+# not: same content, and nothing reads it. The predicted structures are 5 MB
+# per campaign and stay in the deposit; nothing in the notebook reads them,
+# because composition is measured once at collection time.
+!data/campaigns/*/all_results.parquet
 data/derived/*
 !data/derived/.gitkeep
 # The composition table and the query record are small and are the inputs the
