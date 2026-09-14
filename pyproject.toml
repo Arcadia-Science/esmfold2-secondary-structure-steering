@@ -37,6 +37,19 @@ extend-include = ["*.ipynb"]
     # remain in the place where it was originally defined.
     "F811",
 ]
+# src/analysis/design is a verbatim port of the ESM cookbook binder-design
+# tutorial at commit ba4d712. These two ignores exist so the ported code does
+# not have to be edited to satisfy lint rules upstream does not enforce.
+"src/analysis/design/prompts.py" = [
+    # The antibody framework templates and the preset target sequences are
+    # single long string literals. Wrapping them would change their value.
+    "E501",
+]
+"src/analysis/design/structure.py" = [
+    # Adding strict= to the zip in to_atom_array would change behaviour: it
+    # raises on ragged input where upstream truncates.
+    "B905",
+]
 
 [tool.ruff.lint]
 select = [
@@ -71,3 +84,7 @@ line-ending = "auto"
 [tool.ruff.lint.isort]
 order-by-type = true
 no-lines-before = ["future", "standard-library"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]

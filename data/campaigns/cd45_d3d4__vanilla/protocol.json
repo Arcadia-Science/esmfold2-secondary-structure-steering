@@ -1,0 +1,21 @@
+{
+  "target": "cd45_d3d4",
+  "target_uniprot": "P08575",
+  "target_construct_uniprot": "390-574",
+  "target_construct_length_residues": 185,
+  "arm": "vanilla",
+  "arm_label": "Vanilla",
+  "arm_note": "The cookbook objective untouched. Every steering term is still measured and logged, which is how the reference curve for a steered arm is built.",
+  "schedule": {
+    "key": "vanilla",
+    "summary": "no steering term",
+    "waypoints": [
+      {
+        "step": 0,
+        "weights": {}
+      }
+    ]
+  },
+  "n_seeds": 30,
+  "sgd_steps": 150
+}

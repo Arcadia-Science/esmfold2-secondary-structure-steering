@@ -178,3 +178,33 @@ cython_debug/
 /*_files/
 
 **/*.quarto_ipynb
+
+# Campaign artifacts are fetched from the Zenodo deposit or regenerated on a
+# GPU; they are not source. Target FASTA and structures under data/targets are
+# tracked, because they are small and are inputs rather than outputs.
+# Per-campaign composition tables are a few kB and are what the notebook
+# reads, so they are tracked. The per-step loss log is the subject of the
+# steering analysis and is tracked too, at roughly 450 kB per campaign for
+# 30 seeds by 150 steps. Full results tables and predicted structures are
+# large and stay in the deposit.
+data/campaigns/*
+!data/campaigns/.gitkeep
+!data/campaigns/*/
+data/campaigns/*/*
+!data/campaigns/*/composition.parquet
+!data/campaigns/*/protocol.json
+!data/campaigns/*/step_trace.parquet
+data/derived/*
+!data/derived/.gitkeep
+# The composition table and the query record are small and are the inputs the
+# notebook needs, so they are tracked and the pub renders from a fresh clone
+# with no deposit. The 4 MB per-entity pairs table stays deposit-only.
+data/reference/*
+!data/reference/.gitkeep
+!data/reference/natural_binder_composition.csv
+!data/reference/natural_binder_query.json
+
+# Jupyter real-time-collaboration state, written by the server when a client
+# opens a notebook. Local session bookkeeping, not a project artifact.
+.jupyter/
+.jupyter_ystore.db

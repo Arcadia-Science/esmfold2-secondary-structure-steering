@@ -1,0 +1,29 @@
+{
+  "target": "pdl1_igv",
+  "target_uniprot": "Q9NZQ7",
+  "target_construct_uniprot": "18-132",
+  "target_construct_length_residues": 115,
+  "arm": "helix_logcap_burst20_hold01",
+  "arm_label": "Capped helix barrier, burst then hold",
+  "arm_note": "0.5 while secondary structure is still forming, then 0.1 to hold it. The capped barrier stops producing gradient above a top-12 contact probability of 0.8647, which unsteered runs reach within a few steps, so this arm asks whether the weight has to arrive early to do anything at all.",
+  "schedule": {
+    "key": "helix_logcap_burst20_hold01",
+    "summary": "helix_logcap 0.5 for steps 0-19; helix_logcap 0.1 from step 20 on",
+    "waypoints": [
+      {
+        "step": 0,
+        "weights": {
+          "helix_logcap": 0.5
+        }
+      },
+      {
+        "step": 20,
+        "weights": {
+          "helix_logcap": 0.1
+        }
+      }
+    ]
+  },
+  "n_seeds": 30,
+  "sgd_steps": 150
+}

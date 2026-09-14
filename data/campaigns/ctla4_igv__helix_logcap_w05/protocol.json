@@ -1,0 +1,23 @@
+{
+  "target": "ctla4_igv",
+  "target_uniprot": "P16410",
+  "target_construct_uniprot": "38-155",
+  "target_construct_length_residues": 118,
+  "arm": "helix_logcap_w05",
+  "arm_label": "Capped helix barrier at 0.5",
+  "arm_note": "The control that separates timing from magnitude. The burst arm raises the weight early and lowers it late, so on its own it cannot say which of the two did the work. This arm holds the burst's opening weight for the whole run.",
+  "schedule": {
+    "key": "helix_logcap_w05",
+    "summary": "helix_logcap 0.5 from step 0 on",
+    "waypoints": [
+      {
+        "step": 0,
+        "weights": {
+          "helix_logcap": 0.5
+        }
+      }
+    ]
+  },
+  "n_seeds": 30,
+  "sgd_steps": 150
+}

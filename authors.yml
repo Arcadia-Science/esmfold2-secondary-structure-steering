@@ -1,3 +1,7 @@
+# Provisional. The Publishing Team supplies the final `authors.yml` (and
+# `CITATION.cff`) from the Release Center of the AirTable dashboard once
+# contributor roles are assigned. See developer-docs/PUBLISHING_GUIDE.md.
+#
 # For roles, choose from:
 #
 # - conceptualization
@@ -15,16 +19,13 @@
 # - validation
 # - visualization
 authors:
-  - name: <author name as 'First M. Last'>
-    orcid: 0000-0000-0000-0000
+  - name: Evan Kiefl
+    orcid: 0000-0002-6473-0921
     roles:
-      - conceptualization
-      - formal analysis
-      - investigation
-      - methodology
-      - software
-  - name: <author name as 'First M. Last'>
-    orcid: 0000-0000-0000-0000
-    roles:
-      - data curation
-      - validation
+      - Conceptualization
+      - Formal Analysis
+      - Investigation
+      - Methodology
+      - Software
+      - Visualization
+      - Writing
