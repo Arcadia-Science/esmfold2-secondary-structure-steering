@@ -1,5 +1,5 @@
 pub:
-  org: "ekiefl"
+  org: "Arcadia-Science"
   repo: "2026-esmfold2-secondary-structure-steering"
   title: "Steering secondary structure in ESMFold2 binder design"
   # Before publishing, add your Google Analytics ID here (see PUBLISHING_GUIDE.md).

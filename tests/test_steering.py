@@ -121,6 +121,63 @@ def test_helix_penalty_is_high_on_a_helix_and_low_on_a_strand(
     assert on_strand < 0.01
 
 
+def test_helix_mean_is_high_on_a_helix_and_low_on_a_strand(
+    helix: torch.Tensor, strand: torch.Tensor, bins: torch.Tensor
+) -> None:
+    on_helix = float(steering.helix_mean_loss(helix, BINDER_LENGTH, bins)[0])
+    on_strand = float(steering.helix_mean_loss(strand, BINDER_LENGTH, bins)[0])
+    assert on_helix > 0.99
+    assert on_strand < 0.01
+
+
+@pytest.mark.parametrize("helical_residues", [16, 22, 28, 34])
+def test_helix_mean_ranks_partly_helical_binders_where_the_top_12_saturates(
+    helical_residues: int, bins: torch.Tensor
+) -> None:
+    """The property ``helix_mean`` exists for, and the regression guard for it.
+
+    A chimera of a helix followed by a distant strand is built at four helix
+    lengths. A helix of ``n`` residues carries ``n - 4`` rungs entirely inside
+    it, since the last four straddle the junction, so 16 residues is the
+    shortest helix that fills the twelve-wide pooling window. Every length here
+    fills it, ``helix_penalty`` reads them all as fully helical, and
+    ``helix_mean`` separates them in proportion to the helix each carries.
+    """
+    coords = np.concatenate(
+        [
+            helix_coords(helical_residues),
+            strand_coords(BINDER_LENGTH - helical_residues, y=30.0),
+        ]
+    )
+    distogram = distogram_from_coords(coords)
+    pooled = float(steering.helix_penalty_loss(distogram, BINDER_LENGTH, bins)[0])
+    averaged = float(steering.helix_mean_loss(distogram, BINDER_LENGTH, bins)[0])
+
+    assert pooled > 0.99
+    expected = (helical_residues - steering.HELIX_PENALTY_OFFSET) / (
+        BINDER_LENGTH - steering.HELIX_PENALTY_OFFSET
+    )
+    assert averaged == pytest.approx(expected, abs=0.02)
+
+
+def test_helix_mean_keeps_a_gradient_where_the_capped_barrier_has_none(
+    helix: torch.Tensor, bins: torch.Tensor
+) -> None:
+    logits = helix.clone().requires_grad_(True)
+
+    capped = steering.helix_logcap_loss(logits, BINDER_LENGTH, bins).sum()
+    capped.backward()
+    capped_norm = float(logits.grad.norm())
+
+    logits.grad = None
+    averaged = steering.helix_mean_loss(logits, BINDER_LENGTH, bins).sum()
+    averaged.backward()
+    averaged_norm = float(logits.grad.norm())
+
+    assert capped_norm == pytest.approx(0.0, abs=1e-12)
+    assert averaged_norm > 0.0
+
+
 def test_helix_i2_separates_helix_from_strand_spacing(
     helix: torch.Tensor, strand: torch.Tensor, bins: torch.Tensor
 ) -> None:

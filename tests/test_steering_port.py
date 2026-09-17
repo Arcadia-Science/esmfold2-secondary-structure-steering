@@ -47,6 +47,15 @@ PORTED_FUNCTIONS = {
     "sheet_ladder": "compute_sheet_ladder_loss",
 }
 
+ORIGINAL_TERMS = frozenset({"helix_mean"})
+"""Terms written in this repository rather than transcribed from the pipeline.
+
+These have no counterpart to check against, so they are listed here instead.
+Membership is deliberately explicit: a term that is neither ported nor listed
+here fails :func:`test_every_registered_term_is_covered`, which is what stops a
+new transcription from arriving unverified.
+"""
+
 SUPPORTING_FUNCTIONS = (
     "_torch",
     "get_mid_points",
@@ -179,4 +188,5 @@ def test_term_matches_the_pipeline_on_a_saturated_helix(
 
 
 def test_every_registered_term_is_covered() -> None:
-    assert set(PORTED_FUNCTIONS) == set(steering.TERM_KEYS)
+    assert not set(PORTED_FUNCTIONS) & ORIGINAL_TERMS
+    assert set(PORTED_FUNCTIONS) | ORIGINAL_TERMS == set(steering.TERM_KEYS)

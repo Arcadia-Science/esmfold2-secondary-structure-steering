@@ -47,6 +47,52 @@ from analysis.targets import arm as get_arm
 
 APP_NAME = os.environ.get("ESMFOLD2_SS_APP_NAME", "esmfold2-ss-steering")
 MAX_CONTAINERS = int(os.environ.get("ESMFOLD2_SS_MAX_CONTAINERS", "30"))
+ESMC_REPO = "biohub/ESMC-6B"
+
+ESMC_REVISION = "45b0fa5d7fb06faefbd5e3b89bdcef35d564e79a"
+"""The ESMC trunk revision to load, pinned because ``main`` cannot be read.
+
+This is the revision every campaign in this publication was designed against.
+``main`` pointed at it from 2026-06-04 until 2026-09-15, which spans every
+campaign run.
+
+``main`` ships checkpoint keys named for the ``esm`` SDK's own module tree,
+without the ``esmc.`` prefix that ``transformers``' ESMC module expects. Nothing
+raises: ``from_pretrained`` reports the mismatch as a warning and randomly
+initialises every parameter it cannot match, which is the entire trunk.
+``REUSE_ESMC`` then shares that trunk across all six ESMFold2 models, so the
+first thing to actually fail is a downstream SVD on an all-NaN matrix.
+
+Biohub/esm#333 asked for exactly this republishing, to fix loading through the
+SDK. It broke loading through ``transformers``, which is the path this app uses.
+"""
+
+
+def pin_esmc_revision(revision: str) -> None:
+    """Load a named revision of the ESMC trunk.
+
+    Both entry points inherit ``from_pretrained`` from ``ESMCPreTrainedModel``:
+    the design loop builds an ``ESMCForMaskedLM`` for its sequence loss, and
+    each ESMFold2 model builds an ``ESMCModel`` inside ``load_esmc``. The
+    revision is injected here because both call sites are ported code this
+    repository reproduces verbatim.
+
+    The replacement has to be a ``classmethod`` over the underlying function.
+    Binding the base class instead drops the caller's ``cls``, so every
+    subclass call returns a bare ``ESMCPreTrainedModel``.
+    """
+    from transformers.models.esmc.modeling_esmc import ESMCPreTrainedModel
+
+    unpinned = ESMCPreTrainedModel.from_pretrained.__func__
+
+    def pinned(cls: Any, repo_id: str, *args: Any, **kwargs: Any) -> Any:
+        if repo_id == ESMC_REPO and "revision" not in kwargs:
+            kwargs["revision"] = revision
+        return unpinned(cls, repo_id, *args, **kwargs)
+
+    ESMCPreTrainedModel.from_pretrained = classmethod(pinned)
+
+
 DEFAULT_ARM = "vanilla"
 BINDER_NAME = "minibinder"
 PRIMARY_CRITIC = "ESMFold2-Experimental-Fast-Cutoff2025"
@@ -92,7 +138,7 @@ def get_base_image():
             },
         )
         .pip_install(
-            "abnumber", "esm@git+https://github.com/Biohub/esm.git@main", "modal"
+            "abnumber", "esm@git+https://github.com/Biohub/esm.git@ba4d712", "modal"
         )
         .env(
             {
@@ -141,6 +187,8 @@ class ESMFold2DesignModal:
     @modal.enter()
     def load(self) -> None:
         from analysis.design.loop import ESMFold2Design
+
+        pin_esmc_revision(ESMC_REVISION)
 
         self.driver = ESMFold2Design()
         self.driver.load(self.use_scaling_critics)

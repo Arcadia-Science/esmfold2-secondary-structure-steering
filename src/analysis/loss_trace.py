@@ -33,6 +33,7 @@ from pathlib import Path
 import pandas as pd
 import torch
 
+from analysis import paths
 from analysis.steering import TERM_SPECS
 
 STEP_TRACE_NAME = "step_trace.jsonl"
@@ -172,3 +173,38 @@ def load(path: Path) -> pd.DataFrame:
         )
     lines = [line for line in path.read_text().splitlines() if line.strip()]
     return frame([json.loads(line) for line in lines])
+
+
+def is_available(target_key: str, arm: str) -> bool:
+    """True when the collected per-step log exists, no network needed."""
+    return paths.campaign_trace(target_key, arm).is_file()
+
+
+def load_campaign(target_key: str, arm: str) -> pd.DataFrame:
+    """Read one campaign's collected per-step log, or raise saying how to make it."""
+    path = paths.campaign_trace(target_key, arm)
+    if not path.is_file():
+        raise FileNotFoundError(
+            f"No per-step log for {target_key!r} / {arm!r}.\n"
+            f"Expected: {path}\n"
+            f"It is written when a campaign is collected. To regenerate the "
+            f"campaign:\n"
+            f"    python -m analysis.campaign run --targets {target_key} --arms {arm}"
+        )
+    return pd.read_parquet(path)
+
+
+def load_all(target_keys: list[str], arms: list[str]) -> pd.DataFrame:
+    """Every available per-step log concatenated, skipping absent ones."""
+    frames = [
+        load_campaign(key, name)
+        for key in target_keys
+        for name in arms
+        if is_available(key, name)
+    ]
+    if not frames:
+        raise FileNotFoundError(
+            f"No per-step logs under {paths.CAMPAIGNS}. They are written when a "
+            f"campaign is collected."
+        )
+    return pd.concat(frames, ignore_index=True)

@@ -171,9 +171,13 @@ ARM_SPECS: dict[str, ArmSpec] = {
         label="Vanilla",
         schedule=schedule.VANILLA,
         note=(
-            "The cookbook objective untouched. Every steering term is still "
-            "measured and logged, which is how the reference curve for a "
-            "steered arm is built."
+            "The cookbook objective untouched. Every steering term registered "
+            "when the campaign ran is still measured and logged, which is how "
+            "the reference curve for a steered arm is built. Terms added to "
+            "the registry afterwards are absent rather than zero: these "
+            "campaigns predate helix_mean and carry no column for it, so a "
+            "per-step panel of that term shows the steered arms diverging from "
+            "their shared step-zero value instead of from an unsteered curve."
         ),
     ),
     "helix_logcap_w02": ArmSpec(
@@ -194,6 +198,88 @@ ARM_SPECS: dict[str, ArmSpec] = {
             "raises the weight early and lowers it late, so on its own it "
             "cannot say which of the two did the work. This arm holds the "
             "burst's opening weight for the whole run."
+        ),
+    ),
+    "helix_mean_w02": ArmSpec(
+        key="helix_mean_w02",
+        label="Mean helix rung fraction at 0.2",
+        schedule=schedule.constant("helix_mean_w02", "helix_mean", 0.2),
+        note=(
+            "The averaged term at the capped barrier's own weight, so the only "
+            "thing that differs from helix_logcap_w02 is how the per-residue "
+            "scores are pooled."
+        ),
+    ),
+    "helix_mean_w05": ArmSpec(
+        key="helix_mean_w05",
+        label="Mean helix rung fraction at 0.5",
+        schedule=schedule.constant("helix_mean_w05", "helix_mean", 0.5),
+        note=(
+            "The averaged term at the higher of the two weights the capped "
+            "barrier was run at, again matched so that pooling is the only "
+            "difference."
+        ),
+    ),
+    "helix_mean_w10": ArmSpec(
+        key="helix_mean_w10",
+        label="Mean helix rung fraction at 1.0",
+        schedule=schedule.constant("helix_mean_w10", "helix_mean", 1.0),
+        note=(
+            "Fills the gap below the first rung that worked. On PD-L1 the "
+            "averaged term left a median helix fraction of 0.779 at weight 0.5 "
+            "and 0.017 at 2.0, so the whole transition falls between them and "
+            "neither bound locates it."
+        ),
+    ),
+    "helix_mean_w20": ArmSpec(
+        key="helix_mean_w20",
+        label="Mean helix rung fraction at 2.0",
+        schedule=schedule.constant("helix_mean_w20", "helix_mean", 2.0),
+        note=(
+            "The averaged term at a weight chosen to match the capped "
+            "barrier's integrated push rather than its nominal weight. Where "
+            "the barrier still has a gradient it is 2 to 11 times the averaged "
+            "term's, and it carried that gradient on 58% of steps at weight 0.2 "
+            "and 95% at 0.5, so a matched weight is several times higher. This "
+            "arm brackets the two matched-weight arms so that a weak result "
+            "there can be read as a weight rather than as the pooling."
+        ),
+    ),
+    "helix_mean_w30": ArmSpec(
+        key="helix_mean_w30",
+        label="Mean helix rung fraction at 3.0",
+        schedule=schedule.constant("helix_mean_w30", "helix_mean", 3.0),
+        note=(
+            "Between the two rungs that each matched the capped barrier on one "
+            "axis and missed on the other. At 2.0 the averaged term matched the "
+            "barrier's confidence cost but left residual helix in 11 of 30 "
+            "designs; at 5.0 it matched the helix distribution and cost 0.061 "
+            "of ipTM. This weight asks whether a single one does both."
+        ),
+    ),
+    "helix_mean_w50": ArmSpec(
+        key="helix_mean_w50",
+        label="Mean helix rung fraction at 5.0",
+        schedule=schedule.constant("helix_mean_w50", "helix_mean", 5.0),
+        note=(
+            "Second rung of the weight ladder. At 0.5 the averaged term left a "
+            "median helix fraction of 0.779 on PD-L1 against the capped "
+            "barrier's 0.000, and no design reached any sheet, so the ladder "
+            "asks how far the weight has to rise before the averaged term "
+            "reproduces that collapse."
+        ),
+    ),
+    "helix_mean_w100": ArmSpec(
+        key="helix_mean_w100",
+        label="Mean helix rung fraction at 10.0",
+        schedule=schedule.constant("helix_mean_w100", "helix_mean", 10.0),
+        note=(
+            "Top rung of the weight ladder, an order of magnitude above the "
+            "barrier's own weights. The averaged term spreads a constant "
+            "per-rung derivative of one over the number of scored residues "
+            "across every rung, where the barrier concentrates a larger one on "
+            "the twelve most formed. If helix survives even here the pooling "
+            "is doing work that no weight recovers."
         ),
     ),
     "helix_logcap_burst20_hold01": ArmSpec(
@@ -218,18 +304,24 @@ ARM_SPECS: dict[str, ArmSpec] = {
 
 CAMPAIGN_ARMS: tuple[str, ...] = (
     "vanilla",
-    "helix_logcap_w02",
-    "helix_logcap_w05",
+    "helix_mean_w05",
+    "helix_mean_w10",
+    "helix_mean_w20",
+    "helix_mean_w50",
 )
-"""The arms run across every target.
+"""The arms run across every target: unsteered, then the weight scan.
 
-``helix_logcap_burst20_hold01`` is registered but deliberately outside this
-grid. It was built to test whether a steering weight has to arrive early,
-before the capped barrier saturates, and the constant 0.5 control showed that
-it does not: the two arms are indistinguishable on every readout, so the
-burst's advantage over constant 0.2 was its higher opening weight rather than
-its timing. It stays registered because its data is what retired the question,
-and it is not rerun because a schedule is a knob this work found no use for.
+The ``helix_logcap`` arms are registered and their campaigns are still on disk,
+but they sit outside this grid. That term pools the twelve highest i to i+4
+contact probabilities, passes the pooled value through a log barrier and then
+clamps it, which needs a paragraph to state and stops separating designs once
+a dozen rungs have formed. The averaged term is a plain mean over the same
+probabilities, reaches the same fold at a higher weight, and unlike the barrier
+its weight sets how much helix survives rather than only whether any does.
+
+``helix_logcap_burst20_hold01`` is outside the grid for a second reason: it was
+built to test whether a steering weight has to arrive early, and the constant
+0.5 control showed that it does not.
 """
 
 N_SEEDS = 30

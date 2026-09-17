@@ -148,9 +148,7 @@ def helix_log_loss(
     contact and globularity terms once a helix has formed. This one keeps
     growing as those contacts saturate.
     """
-    base = helix_penalty_loss(
-        distogram_logits, binder_length, bin_distance, cutoff, offset, topk
-    )
+    base = helix_penalty_loss(distogram_logits, binder_length, bin_distance, cutoff, offset, topk)
     return -torch.log((1.0 - base).clamp(min=eps))
 
 
@@ -174,10 +172,50 @@ def helix_logcap_loss(
     probability of ``1 - exp(-cap)``, which is 0.8647 at the default cap, the
     term is constant, so it contributes no gradient at all.
     """
-    raw = helix_log_loss(
-        distogram_logits, binder_length, bin_distance, cutoff, offset, topk, eps
-    )
+    raw = helix_log_loss(distogram_logits, binder_length, bin_distance, cutoff, offset, topk, eps)
     return raw.clamp(max=cap)
+
+
+def helix_mean_loss(
+    distogram_logits: torch.Tensor,
+    binder_length: int,
+    bin_distance: torch.Tensor,
+    cutoff: float = HELIX_PENALTY_CUTOFF_ANGSTROM,
+    offset: int = HELIX_PENALTY_OFFSET,
+) -> torch.Tensor:
+    """Mean i to i+4 contact probability over every scored binder residue.
+
+    The same per-residue quantity ``helix_penalty`` pools, but pooled over the
+    whole binder instead of its twelve largest values. The loss is then the
+    expected fraction of binder residues sitting on a helical rung, which is
+    the quantity this publication reports, so the objective and the readout
+    describe the same thing.
+
+    ``helix_penalty`` cannot rank helical designs. Its top-12 mean reaches one
+    once roughly two dozen rungs saturate, and measured across the design grid
+    it takes the value 1.000 on every design above 20% helix regardless of
+    whether that design is a fifth helical or entirely so. Composed with the
+    clamp in ``helix_logcap`` this leaves no gradient at all on 97% of designs
+    carrying at least twelve helical residues. Averaging over every residue
+    removes both ceilings: the score is monotone in helix content across the
+    whole range, and every residue contributes the same constant derivative
+    rather than only the twelve that happen to be largest this step.
+
+    No log barrier and no clamp. The barrier existed to keep pushing as the
+    top-12 mean saturated near one, and this statistic does not: it tops out
+    near 0.85 on a fully helical binder. The cost of that is a smaller gradient
+    norm than the barrier supplied while it was live, which is a weight
+    question rather than a shape question. ``analysis.schedule`` sets the
+    weight.
+
+    The trailing ``offset`` residues have no i to i+4 partner and are excluded
+    from the mean rather than counted as non-helical, so the score does not
+    drift with binder length.
+    """
+    contact_prob = contact_probability_matrix(distogram_logits, bin_distance, cutoff)
+    binder = contact_prob[:, -binder_length:, -binder_length:]
+    diagonal = torch.diagonal(binder, offset=offset, dim1=-2, dim2=-1)
+    return diagonal.mean(dim=-1)
 
 
 def helix_i2_loss(
@@ -194,9 +232,7 @@ def helix_i2_loss(
     spacing that sheets already have, rather than only punishing the helix
     contact itself.
     """
-    return helix_penalty_loss(
-        distogram_logits, binder_length, bin_distance, cutoff, offset, topk
-    )
+    return helix_penalty_loss(distogram_logits, binder_length, bin_distance, cutoff, offset, topk)
 
 
 def sheet_contact_residue_scores(
@@ -209,9 +245,7 @@ def sheet_contact_residue_scores(
     """Per-residue sheet score: its best long-range contact, spacing-gated."""
     n = int(contact_prob.size(-1))
     index = torch.arange(n, device=contact_prob.device)
-    separated = (torch.abs(index[:, None] - index[None, :]) >= min_sep).to(
-        dtype=contact_prob.dtype
-    )
+    separated = (torch.abs(index[:, None] - index[None, :]) >= min_sep).to(dtype=contact_prob.dtype)
     gate = strand_spacing_gate(expected_dist, ext_center, ext_alpha)
     pair = contact_prob * separated * gate.unsqueeze(-1) * gate.unsqueeze(-2)
     return pair.amax(dim=-1)
@@ -236,9 +270,7 @@ def sheet_contact_loss(
     expected = expected_distance_matrix(distogram_logits, bin_distance)
     binder = contact_prob[:, -binder_length:, -binder_length:]
     binder_expected = expected[:, -binder_length:, -binder_length:]
-    scores = sheet_contact_residue_scores(
-        binder, binder_expected, min_sep, ext_center, ext_alpha
-    )
+    scores = sheet_contact_residue_scores(binder, binder_expected, min_sep, ext_center, ext_alpha)
     return 1.0 - torch.topk(scores, k=topk, dim=-1).values.mean(dim=-1)
 
 
@@ -260,9 +292,7 @@ def sheet_mean_loss(
     expected = expected_distance_matrix(distogram_logits, bin_distance)
     binder = contact_prob[:, -binder_length:, -binder_length:]
     binder_expected = expected[:, -binder_length:, -binder_length:]
-    scores = sheet_contact_residue_scores(
-        binder, binder_expected, min_sep, ext_center, ext_alpha
-    )
+    scores = sheet_contact_residue_scores(binder, binder_expected, min_sep, ext_center, ext_alpha)
     return 1.0 - scores.mean(dim=-1)
 
 
@@ -285,9 +315,7 @@ def sheet_ladder_residue_scores(
     """
     n = int(contact_prob.size(-1))
     index = torch.arange(n, device=contact_prob.device)
-    separated = (torch.abs(index[:, None] - index[None, :]) >= min_sep).to(
-        dtype=contact_prob.dtype
-    )
+    separated = (torch.abs(index[:, None] - index[None, :]) >= min_sep).to(dtype=contact_prob.dtype)
     width = n - min_run + 1
     parallel = contact_prob.new_ones(contact_prob.shape[:-2] + (width, width))
     antiparallel = parallel
@@ -295,16 +323,12 @@ def sheet_ladder_residue_scores(
         rows = slice(step, step + width)
         parallel = parallel * contact_prob[:, rows, rows] * separated[rows, rows]
         columns = slice(min_run - 1 - step, min_run - 1 - step + width)
-        antiparallel = (
-            antiparallel * contact_prob[:, rows, columns] * separated[rows, columns]
-        )
+        antiparallel = antiparallel * contact_prob[:, rows, columns] * separated[rows, columns]
 
     gate = strand_spacing_gate(expected_dist, ext_center, ext_alpha)
     parallel = parallel * gate[:, :width].unsqueeze(-1) * gate[:, :width].unsqueeze(-2)
     antiparallel = (
-        antiparallel
-        * gate[:, :width].unsqueeze(-1)
-        * gate[:, min_run - 1 :].unsqueeze(-2)
+        antiparallel * gate[:, :width].unsqueeze(-1) * gate[:, min_run - 1 :].unsqueeze(-2)
     )
 
     def placed(values: torch.Tensor, start: int) -> torch.Tensor:
@@ -394,6 +418,19 @@ TERM_SPECS: dict[str, SteeringTermSpec] = {
         ),
         compute=helix_logcap_loss,
     ),
+    "helix_mean": SteeringTermSpec(
+        key="helix_mean",
+        label="Mean helix rung fraction",
+        family=HELIX_FAMILY,
+        unit="0-1",
+        measures=(
+            "mean binder i to i+4 contact probability inside 7 A over every "
+            "scored residue, so the loss is the expected helical-rung fraction "
+            "and stays monotone in helix content where the top-12 pooling "
+            "saturates"
+        ),
+        compute=helix_mean_loss,
+    ),
     "helix_i2": SteeringTermSpec(
         key="helix_i2",
         label="Helix i to i+2 penalty",
@@ -407,7 +444,7 @@ TERM_SPECS: dict[str, SteeringTermSpec] = {
     ),
     "sheet_contact": SteeringTermSpec(
         key="sheet_contact",
-        label="Sheet contact reward",
+        label="Sheet contact shortfall",
         family=SHEET_FAMILY,
         unit="0-1",
         measures=(
@@ -418,7 +455,7 @@ TERM_SPECS: dict[str, SteeringTermSpec] = {
     ),
     "sheet_mean": SteeringTermSpec(
         key="sheet_mean",
-        label="Sheet contact reward, all residues",
+        label="Sheet contact shortfall, all residues",
         family=SHEET_FAMILY,
         unit="0-1",
         measures=(
@@ -429,7 +466,7 @@ TERM_SPECS: dict[str, SteeringTermSpec] = {
     ),
     "sheet_ladder": SteeringTermSpec(
         key="sheet_ladder",
-        label="Sheet ladder reward",
+        label="Sheet ladder shortfall",
         family=SHEET_FAMILY,
         unit="0-1",
         measures=(
@@ -446,9 +483,7 @@ TERM_KEYS: tuple[str, ...] = tuple(TERM_SPECS)
 def term(key: str) -> SteeringTermSpec:
     """Look up one steering term, naming the valid keys on failure."""
     if key not in TERM_SPECS:
-        raise KeyError(
-            f"unknown steering term {key!r}; registered: {sorted(TERM_SPECS)}"
-        )
+        raise KeyError(f"unknown steering term {key!r}; registered: {sorted(TERM_SPECS)}")
     return TERM_SPECS[key]
 
 
@@ -496,8 +531,7 @@ def compute_steering_losses(
     unknown = set(weights) - set(TERM_SPECS)
     if unknown:
         raise KeyError(
-            f"unknown steering term(s) {sorted(unknown)}; "
-            f"registered: {sorted(TERM_SPECS)}"
+            f"unknown steering term(s) {sorted(unknown)}; registered: {sorted(TERM_SPECS)}"
         )
     if binder_length < MIN_BINDER_LENGTH:
         raise ValueError(
@@ -511,9 +545,7 @@ def compute_steering_losses(
             f"the binder_length {binder_length}"
         )
 
-    bin_distance = bin_distance.to(
-        device=distogram_logits.device, dtype=distogram_logits.dtype
-    )
+    bin_distance = bin_distance.to(device=distogram_logits.device, dtype=distogram_logits.dtype)
     terms: dict[str, torch.Tensor] = {}
     total = torch.zeros(distogram_logits.size(0), device=distogram_logits.device)
     for key, spec in TERM_SPECS.items():
