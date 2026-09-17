@@ -8,6 +8,14 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 DATA = REPO_ROOT / "data"
 TARGETS = DATA / "targets"
 CAMPAIGNS = DATA / "campaigns"
+
+ASSETS = REPO_ROOT / "assets"
+"""Small tracked files a notebook cell needs at execution time.
+
+Distinct from ``data``, which is generated, gitignored and fetched from the
+deposit. An asset is committed because a cell cannot run without it and it is
+too small to be worth depositing.
+"""
 DERIVED = DATA / "derived"
 REFERENCE = DATA / "reference"
 
@@ -63,6 +71,16 @@ def campaign_summary(target_key: str, arm: str) -> Path:
 def campaign_complexes(target_key: str, arm: str) -> Path:
     """Predicted complex structures for one campaign."""
     return campaign_dir(target_key, arm) / "all_complexes"
+
+
+def campaign_step_complexes(target_key: str, arm: str, seed: int) -> Path:
+    """Per-step predicted complexes for one design, when they were logged.
+
+    One directory per seed, because a single design contributes as many
+    structures as it has optimization steps and they would otherwise sit
+    alongside the one final complex per seed in ``all_complexes``.
+    """
+    return campaign_dir(target_key, arm) / "step_complexes" / f"seed{seed:02d}"
 
 
 def ensure_dirs() -> None:

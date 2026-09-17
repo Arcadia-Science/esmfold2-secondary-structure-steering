@@ -36,6 +36,8 @@ Unlike upstream's ``ESMFold2DesignModal``, the Modal class here holds an
 only ``modal`` installed, without ``esm`` or the Biohub ``transformers`` fork.
 """
 
+import gzip
+import json
 import os
 from typing import Any
 
@@ -137,9 +139,7 @@ def get_base_image():
                 "NVTE_FRAMEWORK": "pytorch",
             },
         )
-        .pip_install(
-            "abnumber", "esm@git+https://github.com/Biohub/esm.git@ba4d712", "modal"
-        )
+        .pip_install("abnumber", "esm@git+https://github.com/Biohub/esm.git@ba4d712", "modal")
         .env(
             {
                 "HF_HOME": "/models",
@@ -150,19 +150,42 @@ def get_base_image():
     )
 
 
-image = (
-    get_base_image()
-    .pip_install("pandas", "pydssp")
-    .add_local_python_source("analysis")
-)
+image = get_base_image().pip_install("pandas", "pydssp").add_local_python_source("analysis")
 
 app = modal.App(
     name=APP_NAME,
     image=image,
-    volumes={
-        "/models": modal.Volume.from_name("esmfold2-models", create_if_missing=True)
-    },
+    volumes={"/models": modal.Volume.from_name("esmfold2-models", create_if_missing=True)},
 )
+
+
+def _pack_structures(structures: tuple[str, ...]) -> bytes:
+    """Per-step complexes as one gzipped JSON array, empty when none were logged.
+
+    A 150-step run holds tens of megabytes of PDB text, which is coordinates
+    written out as decimal digits and compresses by roughly an order of
+    magnitude. The payload is a function return value crossing a network, so it
+    is worth not sending the uncompressed form.
+
+    JSON rather than the records concatenated with a delimiter, because PDB text
+    already contains newlines and ends with a record that also appears inside
+    multi-model files, so every delimiter worth choosing is one the payload can
+    contain. An array needs no delimiter at all.
+    """
+    if not structures:
+        return b""
+    return gzip.compress(json.dumps(list(structures)).encode(), mtime=0)
+
+
+def unpack_structures(blob: bytes) -> list[str]:
+    """The per-step complexes a design returned, in step order.
+
+    Lives beside the packing so the two cannot drift apart, and is called by the
+    client rather than in the container.
+    """
+    if not blob:
+        return []
+    return json.loads(gzip.decompress(blob).decode())
 
 
 @app.cls(
@@ -201,6 +224,8 @@ class ESMFold2DesignModal:
         target: str = DEFAULT_TARGET,
         target_sequence: str = "",
         arm: str = DEFAULT_ARM,
+        sampling_steps: int = 0,
+        log_step_structures: bool = False,
     ) -> dict[str, Any]:
         """Run one binder design; return metrics, the complex, and the loss log.
 
@@ -212,8 +237,16 @@ class ESMFold2DesignModal:
         default arm carries no steering term, so it reproduces the cookbook
         objective.
 
-        ``steps`` is applied by rebinding ``analysis.design.loop.STEPS``, which
-        is the global ``design_binder`` reads for its step count.
+        ``steps`` is passed to the design loop as a parameter.
+
+        ``sampling_steps`` sets how many solver steps the structure module takes
+        on every step of the run, confidence steps included, so a logged
+        trajectory is sampled the same way throughout. Zero means leave the
+        cookbook's split alone, which is one step ordinarily and fifty on a
+        confidence step. ``log_step_structures`` returns every step's predicted
+        complex under ``step_complexes_gz``, compressed because 150 all-atom
+        complexes are tens of megabytes as text and the payload crosses a
+        network.
 
         The returned ``step_trace`` is one row per optimization step: every
         loss, every steering weight in force, the per-step binding readout and
@@ -229,14 +262,18 @@ class ESMFold2DesignModal:
             )
 
         arm_spec = get_arm(arm)
-        design_loop.STEPS = int(steps)
-        _, trajectory, critic_results, trace = self.driver.design(
+        solver_steps = sampling_steps or design_loop.SAMPLING_STEPS
+        _, trajectory, critic_results, trace, step_structures = self.driver.design(
             target_name=target,
             binder_name=BINDER_NAME,
             target_sequence=target_sequence,
             seed=int(seed),
             batch_size=1,
             schedule=arm_spec.schedule,
+            steps=int(steps),
+            sampling_steps=solver_steps,
+            confidence_sampling_steps=solver_steps,
+            log_step_structures=log_step_structures,
         )
 
         by_critic = {record["critic_name"]: record for record in critic_results}
@@ -262,19 +299,17 @@ class ESMFold2DesignModal:
             "critic_plddt_target": primary["plddt_target"],
             "critic_plddt_complex": primary["plddt_complex"],
             "critic_distogram_iptm_proxy": primary["distogram_iptm_proxy"],
-            "critic_iptm_by_model": {
-                name: record["iptm"] for name, record in by_critic.items()
-            },
+            "critic_iptm_by_model": {name: record["iptm"] for name, record in by_critic.items()},
             "critic_plddt_binder_by_model": {
                 name: record["plddt_binder"] for name, record in by_critic.items()
             },
             "critic_distogram_iptm_proxy_by_model": {
-                name: record["distogram_iptm_proxy"]
-                for name, record in by_critic.items()
+                name: record["distogram_iptm_proxy"] for name, record in by_critic.items()
             },
             "design_steps_recorded": len(trajectory),
             "step_trace": loss_trace.rows(trace),
             "complex_pdb": primary["complex"].to_pdb_string(),
+            "step_complexes_gz": _pack_structures(step_structures),
         }
 
 

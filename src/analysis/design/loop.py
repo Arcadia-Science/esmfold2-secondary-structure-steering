@@ -9,9 +9,13 @@ Verbatim from ``cookbook/tutorials/binder_design.py`` at upstream commit
 comments: setup, the optimization loop over ``STEPS`` on a cosine temperature
 schedule, and scoring of the best sequence by every loaded critic.
 
-``STEPS`` is read as a module global at call time, exactly as upstream reads it.
-A caller that needs a different step count rebinds ``analysis.design.loop.STEPS``
-before calling, which is what :mod:`analysis.modal_app` does.
+``steps`` is a parameter defaulting to ``STEPS``. Upstream reads the module
+global directly and this port used to as well, with callers rebinding
+``analysis.design.loop.STEPS`` before calling. That worked only because Modal
+runs one input per container and because the caller always passed a value, so
+every call reassigned it; it also left ``analysis.design.constants.STEPS`` and
+the re-export on :mod:`analysis.design` holding the original number while the
+loop used another. A parameter has none of those hazards.
 
 ``design_binder`` is the one ported definition this repository extends rather
 than reproduces. Four upstream statements change: the signature gains two
@@ -21,7 +25,7 @@ replicate can be named in that log, and the structural loss gains the steering
 total. Everything else is inserted. ``tests/test_design_port.py`` enumerates
 that divergence statement by statement and fails if it grows.
 
-Four things are added. Three sit inside the optimization step:
+Five things are added. Four sit inside the optimization step:
 
 1. The secondary-structure steering terms from :mod:`analysis.steering`, at the
    weights :mod:`analysis.schedule` sets for that step, added to the structural
@@ -36,7 +40,15 @@ Four things are added. Three sit inside the optimization step:
    the ones carrying no weight, because the claim that the capped barrier runs
    out of gradient early is a claim about unsteered runs.
 
-The fourth is in the critic scoring that follows the loop: per-chain pLDDT,
+A fifth is optional and off by default: when ``log_step_structures`` is set,
+every step's predicted complex is built and kept as PDB text, so a run can be
+watched as a trajectory rather than read as a curve. The coordinates are already
+computed on every step, since the structure module has to run for the distogram
+to exist, and the cookbook discards them until the critics. Pair it with
+``sampling_steps`` raised to ``confidence_sampling_steps``, or the trajectory is
+sampled one way for most of the run and another way at the end.
+
+The next is in the critic scoring that follows the loop: per-chain pLDDT,
 via :func:`analysis.confidence.chain_plddt`. The cookbook builds the complex
 with per-atom pLDDT in its B-factor column but reports no per-chain number, and
 the viability rule this publication uses needs binder pLDDT specifically,
@@ -104,12 +116,30 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s: %(mes
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
+SAMPLING_STEPS = 1
+"""Solver steps the structure module takes on an ordinary optimization step.
+
+The cookbook takes one. A single step is enough to give the distogram the
+gradient is read from, and it is the cheapest thing that does, which is what
+matters when the step runs 150 times. Raising it buys a better sampled set of
+coordinates rather than a better distogram, so it is only worth paying for when
+the coordinates themselves are wanted.
+"""
+
+CONFIDENCE_SAMPLING_STEPS = 50
+"""Solver steps on a confidence step, where a real ipTM is computed.
+
+Confidence needs coordinates rather than a distogram, so the cookbook spends
+fifty steps on the tail of the run where the temperature has collapsed and the
+sequence has stopped moving. A trajectory logged across the whole run therefore
+changes sampling budget partway through unless this and ``SAMPLING_STEPS`` are
+set to the same value.
+"""
+
 TIMING_KEYS = ("time", "peak_allocated_gib", "peak_reserved_gib")
 
 
-def normalized_gradient_tensor(
-    grad: torch.Tensor, gradient_mask: torch.Tensor
-) -> torch.Tensor:
+def normalized_gradient_tensor(grad: torch.Tensor, gradient_mask: torch.Tensor) -> torch.Tensor:
     """Rescale a masked gradient to unit norm per effective position.
 
     ``index_has_nonzero_grad`` is ``(B, L)``; ``eff_L`` and ``grad_norm`` are
@@ -138,7 +168,17 @@ def design_binder(
     batch_size: int = 1,
     schedule: LossSchedule = VANILLA,
     trace_path: Path | None = None,
-) -> tuple[list[str], Trajectory, list[dict], tuple[loss_trace.StepRecord, ...]]:
+    steps: int = STEPS,
+    sampling_steps: int = SAMPLING_STEPS,
+    confidence_sampling_steps: int = CONFIDENCE_SAMPLING_STEPS,
+    log_step_structures: bool = False,
+) -> tuple[
+    list[str],
+    Trajectory,
+    list[dict],
+    tuple[loss_trace.StepRecord, ...],
+    tuple[str, ...],
+]:
     """
     Algorithm 11 Gradient-Guided Binder Sequence Optimization.
 
@@ -165,32 +205,24 @@ def design_binder(
     device = "cuda"
     if target_name in TARGET_SEQUENCES:
         if target_sequence is not None:
-            raise ValueError(
-                f"{target_name!r} is a preset target; omit target_sequence."
-            )
+            raise ValueError(f"{target_name!r} is a preset target; omit target_sequence.")
         target_sequence = TARGET_SEQUENCES[target_name]
     elif target_sequence is None:
-        raise ValueError(
-            f"{target_name!r} is not a preset target; provide target_sequence."
-        )
+        raise ValueError(f"{target_name!r} is not a preset target; provide target_sequence.")
     target_one_hot = sequence_to_one_hot(target_sequence, device=device)
 
     if binder_name in BINDER_PROMPT_FACTORIES:
         if binder_sequence is not None:
-            raise ValueError(
-                f"{binder_name!r} is a preset binder; omit binder_sequence."
-            )
+            raise ValueError(f"{binder_name!r} is a preset binder; omit binder_sequence.")
         binder_prompt_factor = BINDER_PROMPT_FACTORIES[binder_name]
         if is_antibody is not None:
-            assert (
-                binder_prompt_factor.is_antibody == is_antibody
-            ), "Conflict in is_antibody settings."
+            assert binder_prompt_factor.is_antibody == is_antibody, (
+                "Conflict in is_antibody settings."
+            )
         is_antibody = binder_prompt_factor.is_antibody
         binder_sequence = binder_prompt_factor.sample(seed=seed)
     elif binder_sequence is None:
-        raise ValueError(
-            f"{binder_name!r} is not a preset binder; provide binder_sequence."
-        )
+        raise ValueError(f"{binder_name!r} is not a preset binder; provide binder_sequence.")
     elif is_antibody is None:
         is_antibody = _is_antibody_sequence(binder_sequence)
 
@@ -201,13 +233,12 @@ def design_binder(
     assert "|" not in binder_sequence
 
     with seed_context(seed), torch.device(device):
-        logits = build_initial_soft_sequence_logits(
-            binder_sequence, batch_size=batch_size
-        )
+        logits = build_initial_soft_sequence_logits(binder_sequence, batch_size=batch_size)
         gradient_mask = build_gradient_mask(binder_sequence, batch_size=batch_size)
 
     trajectory: Trajectory = {}
     trace: list[loss_trace.StepRecord] = []
+    step_structures: list[str] = []
     bin_distance = get_mid_points()
     global_step = 0
 
@@ -234,14 +265,14 @@ def design_binder(
             target_one_hot,
             design,
             num_loops=1,
-            num_sampling_steps=50 if calculate_confidence else 1,
+            num_sampling_steps=(
+                confidence_sampling_steps if calculate_confidence else sampling_steps
+            ),
             calculate_confidence=calculate_confidence,
             seed=seed + global_step,
         )
         sequences: list[str] = fold_result["seq_list"]
-        losses = compute_structure_losses(
-            fold_result["distogram_logits"], binder_length
-        )
+        losses = compute_structure_losses(fold_result["distogram_logits"], binder_length)
         weights = schedule.weights_at(global_step)
         steering_losses = compute_steering_losses(
             fold_result["distogram_logits"], binder_length, bin_distance, weights
@@ -277,12 +308,8 @@ def design_binder(
         step_losses["structure_loss"] = structure_loss.detach().cpu()
         step_losses["steering_loss"] = steering_losses.total.detach().cpu()
         step_losses["time"] = time.time() - start
-        step_losses["peak_allocated_gib"] = (
-            torch.cuda.max_memory_allocated() / BYTES_PER_GIB
-        )
-        step_losses["peak_reserved_gib"] = (
-            torch.cuda.max_memory_reserved() / BYTES_PER_GIB
-        )
+        step_losses["peak_allocated_gib"] = torch.cuda.max_memory_allocated() / BYTES_PER_GIB
+        step_losses["peak_reserved_gib"] = torch.cuda.max_memory_reserved() / BYTES_PER_GIB
         trajectory[step] = step_losses
         loss_str = "  ".join(
             f"{k}={v.mean().item() if torch.is_tensor(v) else v:.4f}"
@@ -313,7 +340,7 @@ def design_binder(
             arm=schedule.key,
             seed=seed,
             step=step,
-            steps=STEPS,
+            steps=steps,
             temperature=temperature,
             confidence_step=calculate_confidence,
             inversion_model=inversion_name,
@@ -328,6 +355,10 @@ def design_binder(
         trace.append(record)
         if trace_path is not None:
             loss_trace.append(record, trace_path)
+        if log_step_structures:
+            step_structures.append(
+                build_complex(fold_result["inputs"], fold_result["output"]).to_pdb_string()
+            )
 
         global_step += 1
         return logits, sequences, fold_result.get("iptm", None)
@@ -335,8 +366,8 @@ def design_binder(
     optimizer = optim.SGD([logits], lr=LEARNING_RATE)
     best_iptm: list[float] = [-1.0] * batch_size
     best_sequences: list[str] = [""] * batch_size
-    for step in range(STEPS):
-        t = (step + 1) / STEPS
+    for step in range(steps):
+        t = (step + 1) / steps
         remaining = 0.5 * (1 + math.cos(math.pi * t))
         temperature = TEMPERATURE_MIN + (1 - TEMPERATURE_MIN) * remaining
         logits, sequences, iptm = run_step(
@@ -412,7 +443,13 @@ def design_binder(
                 }
             )
 
-    return best_sequences, trajectory, critic_results, tuple(trace)
+    return (
+        best_sequences,
+        trajectory,
+        critic_results,
+        tuple(trace),
+        tuple(step_structures),
+    )
 
 
 class ESMFold2Design:
@@ -438,9 +475,7 @@ class ESMFold2Design:
             ]
 
         self.inversion_models = {
-            model_name: _load_hf_model(
-                model_name, lm_dropout=0.5, cache_esmc=True, device="cuda"
-            )
+            model_name: _load_hf_model(model_name, lm_dropout=0.5, cache_esmc=True, device="cuda")
             for model_name in self.inversion_model_names
         }
         if COMPILE:
@@ -457,9 +492,7 @@ class ESMFold2Design:
                 name, lm_dropout=0.25, cache_esmc=False, device="cpu"
             )
 
-        self.esmc_model = ESMCForMaskedLM.from_pretrained(
-            self.lm_name, torch_dtype=torch.float32
-        )
+        self.esmc_model = ESMCForMaskedLM.from_pretrained(self.lm_name, torch_dtype=torch.float32)
         if REUSE_ESMC:
             reusable_esmc_model = self.inversion_models["ESMFold2-Experimental-Fast"]
             assert reusable_esmc_model.config.esmc_id == self.lm_name, (
@@ -483,7 +516,17 @@ class ESMFold2Design:
         batch_size: int = 1,
         schedule: LossSchedule = VANILLA,
         trace_path: Path | None = None,
-    ) -> tuple[list[str], Trajectory, list[dict], tuple[loss_trace.StepRecord, ...]]:
+        steps: int = STEPS,
+        sampling_steps: int = SAMPLING_STEPS,
+        confidence_sampling_steps: int = CONFIDENCE_SAMPLING_STEPS,
+        log_step_structures: bool = False,
+    ) -> tuple[
+        list[str],
+        Trajectory,
+        list[dict],
+        tuple[loss_trace.StepRecord, ...],
+        tuple[str, ...],
+    ]:
         return design_binder(
             self.inversion_models,
             self.hf_critic_models,
@@ -497,4 +540,8 @@ class ESMFold2Design:
             batch_size=batch_size,
             schedule=schedule,
             trace_path=trace_path,
+            steps=steps,
+            sampling_steps=sampling_steps,
+            confidence_sampling_steps=confidence_sampling_steps,
+            log_step_structures=log_step_structures,
         )

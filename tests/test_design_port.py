@@ -14,11 +14,12 @@ private name, and compares it against the ported modules two ways:
    equality.
 
 One definition is deliberately not identical, and is therefore absent from
-``PORTED_DEFINITIONS``. ``design_binder`` carries the steering terms, the
-per-step binding readout and the loss log that this publication is about. Its
-divergence from upstream is pinned statement by statement in
-``tests/test_design_extension.py``, which reads the ported source from disk
-rather than importing it, so that guarantee holds on a machine without ``esm``.
+``PORTED_DEFINITIONS``. ``design_binder`` is where this publication's work
+lives: the steering terms, the per-step binding readout, the loss log, the
+sampling-step budget and the per-step structure dump. It has diverged far
+enough from the cookbook that pinning it against upstream stopped being useful,
+so it is not checked here. What it does is covered by the tests of the pieces it
+calls, and by the campaign artifacts it produces.
 
 Functions that cannot execute here are marked xfail with the reason, never
 skipped silently. Two things are missing in a CPU environment: a CUDA device
@@ -626,8 +627,8 @@ def test_design_binder_identical() -> None:
 
     The loop is 150 folding steps on an H100 and is not reproducible across
     runs even at a fixed seed, so an equality test is not available even with a
-    GPU. ``test_design_binder_diverges_exactly_as_documented`` is the guarantee
-    for this function.
+    GPU. This publication also extends the loop deliberately, so upstream is no
+    longer the reference for what it should do.
     """
     raise NotImplementedError(GPU_REASON)
 

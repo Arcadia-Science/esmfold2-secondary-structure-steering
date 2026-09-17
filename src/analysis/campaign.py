@@ -116,13 +116,23 @@ def status(
 
 
 def spawn_campaign(
-    target: str, arm: str, n_seeds: int = N_SEEDS, steps: int = SGD_STEPS
+    target: str,
+    arm: str,
+    n_seeds: int = N_SEEDS,
+    steps: int = SGD_STEPS,
+    sampling_steps: int = 0,
+    log_step_structures: bool = False,
 ) -> pd.DataFrame:
     """Launch one campaign on Modal and write its call manifest.
 
     Returns the existing manifest untouched if there is one, so a rerun after
     an interruption resumes by collecting rather than by paying for the same
     designs twice.
+
+    ``sampling_steps`` and ``log_step_structures`` are diagnostic. They are
+    recorded in ``protocol.json`` because they change what the run cost and what
+    it produced, and a campaign carrying per-step structures is not the same
+    artifact as one that does not.
     """
     spec = get_target(target)
     arm_spec = get_arm(arm)
@@ -149,6 +159,8 @@ def spawn_campaign(
         "schedule": arm_spec.schedule.to_dict(),
         "n_seeds": n_seeds,
         "sgd_steps": steps,
+        "sampling_steps": sampling_steps or None,
+        "step_structures_logged": log_step_structures,
     }
     (directory / "protocol.json").write_text(json.dumps(protocol, indent=2) + "\n")
 
@@ -161,6 +173,8 @@ def spawn_campaign(
             target=spec.key,
             target_sequence=target_sequence,
             arm=arm_spec.key,
+            sampling_steps=sampling_steps,
+            log_step_structures=log_step_structures,
         )
         rows.append({"seed": seed, "call_id": call.object_id})
 
@@ -175,8 +189,24 @@ def spawn(
     arm: str = typer.Option(..., help="Arm key from analysis.targets."),
     n_seeds: int = typer.Option(N_SEEDS, help="Designs to generate."),
     steps: int = typer.Option(SGD_STEPS, help="Optimization steps per design."),
+    sampling_steps: int = typer.Option(
+        0,
+        help=(
+            "Structure-solver steps on every optimization step, confidence "
+            "steps included. 0 keeps the cookbook's 1-then-50 split."
+        ),
+    ),
+    log_step_structures: bool = typer.Option(
+        False, help="Return every step's predicted complex as a PDB."
+    ),
 ) -> None:
-    """Launch one campaign on Modal and write its call manifest."""
+    """Launch one campaign on Modal and write its call manifest.
+
+    ``--sampling-steps`` and ``--log-step-structures`` are for diagnostic runs.
+    Raising the solver budget makes every step cost what a confidence step
+    costs, and logging structures returns one complex per step, so the two
+    together turn a design into a trajectory at a many-fold higher price.
+    """
     if artifacts.status(target, arm).has_results:
         typer.echo(
             f"Results already present for {target} / {arm}: "
@@ -184,7 +214,7 @@ def spawn(
         )
         raise typer.Exit(0)
     existed = paths.campaign_manifest(target, arm).is_file()
-    manifest = spawn_campaign(target, arm, n_seeds, steps)
+    manifest = spawn_campaign(target, arm, n_seeds, steps, sampling_steps, log_step_structures)
     verb = "Reusing manifest of" if existed else "Spawned"
     typer.echo(
         f"{verb} {len(manifest)} jobs for {target} / {arm}.\n"
@@ -205,6 +235,25 @@ class Collected:
     n_failed: int
     n_trace_rows: int
     n_viable: int
+
+
+def _write_step_complexes(target: str, arm: str, seed: int, blob: bytes) -> None:
+    """Write one design's per-step complexes, numbered by step.
+
+    Does nothing when the design did not log them, which is every production
+    campaign; the diagnostic runs that do are a handful. Step numbers are zero
+    padded so the files sort in the order the optimizer produced them, which is
+    what a viewer loading a directory as a trajectory needs.
+    """
+    from analysis.modal_app import unpack_structures
+
+    structures = unpack_structures(blob)
+    if not structures:
+        return
+    directory = paths.campaign_step_complexes(target, arm, seed)
+    directory.mkdir(parents=True, exist_ok=True)
+    for step, pdb_text in enumerate(structures):
+        (directory / f"step{step:03d}.pdb").write_text(pdb_text)
 
 
 def collect_campaign(target: str, arm: str) -> Collected:
@@ -252,13 +301,12 @@ def collect_campaign(target: str, arm: str) -> Collected:
         pdb_text = result.pop("complex_pdb", "")
         if pdb_text:
             (complexes / f"seed{int(row.seed):02d}.pdb").write_text(pdb_text)
+        _write_step_complexes(target, arm, int(row.seed), result.pop("step_complexes_gz", b""))
         trace_rows.extend(result.pop("step_trace"))
         records.append(design_record(int(row.seed), result))
 
     if not records:
-        raise RuntimeError(
-            f"No finished calls yet for {target} / {arm} ({pending} pending)."
-        )
+        raise RuntimeError(f"No finished calls yet for {target} / {arm} ({pending} pending).")
 
     frame = pd.DataFrame(records).sort_values("seed")
     frame.to_parquet(paths.campaign_results(target, arm), index=False)
@@ -267,9 +315,7 @@ def collect_campaign(target: str, arm: str) -> Collected:
     trace = loss_trace.frame(trace_rows)
     trace.to_parquet(paths.campaign_trace(target, arm), index=False)
 
-    table = composition.build(
-        target, arm, complexes, paths.campaign_results(target, arm)
-    )
+    table = composition.build(target, arm, complexes, paths.campaign_results(target, arm))
     composition.write(target, arm, table)
 
     summary = {
@@ -374,8 +420,7 @@ def ensure(
     for target, arm in missing:
         manifest = spawn_campaign(target, arm, n_seeds, steps)
         calls[(target, arm)] = {
-            int(row.seed): modal.FunctionCall.from_id(row.call_id)
-            for row in manifest.itertuples()
+            int(row.seed): modal.FunctionCall.from_id(row.call_id) for row in manifest.itertuples()
         }
         print(f"  spawned {target} / {arm}: {len(manifest)} calls", flush=True)
 
