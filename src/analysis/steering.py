@@ -287,6 +287,18 @@ def sheet_mean_loss(
 
     The same score as ``sheet_contact``, but every residue counts. A top-12
     selection can reach zero on one short ladder and then stop pushing.
+
+    Its value on a distogram is not comparable to the sheet content of the
+    structure that distogram describes, and is far larger. Two steps in the
+    per-residue score amplify a diffuse distogram: the residue takes a maximum
+    over every candidate partner, so many small probabilities produce a large
+    maximum, and the spacing gate reads an expected i to i+2 distance that
+    diffuse bins pull well past its 6 A centre, which opens the gate on
+    residues that are geometrically helical. Evaluated on final coordinates
+    with hard distances this term reads 0.001 on an all-helix binder whose
+    Kabsch-Sander sheet fraction is 0.000; evaluated on that design's own
+    distogram it reads above 0.3. Use it as an objective, and use
+    :mod:`analysis.secondary_structure` to say how much sheet a design has.
     """
     contact_prob = contact_probability_matrix(distogram_logits, bin_distance, cutoff)
     expected = expected_distance_matrix(distogram_logits, bin_distance)

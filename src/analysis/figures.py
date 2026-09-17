@@ -832,17 +832,6 @@ class TraceMetric:
     key: str
     column: str
     axis_label: str
-    invert: bool = False
-    """Plot ``1 - column`` rather than the column itself.
-
-    The sheet terms are shortfalls: each computes one minus a contact score, so
-    a low value means the binder has more sheet. The helix term is the opposite,
-    a mean contact probability where high means more helix. Plotting both raw
-    puts "more structure" at opposite ends of the two panels, which invites a
-    reader comparing them to draw the conclusion backwards. Inverting the
-    shortfall restores a score, so up is more sheet in the panel and more helix
-    in its neighbour.
-    """
 
 
 TRACE_METRICS: dict[str, TraceMetric] = {
@@ -851,23 +840,12 @@ TRACE_METRICS: dict[str, TraceMetric] = {
         column="helix_mean (0-1)",
         axis_label="mean helix rung fraction (0-1)",
     ),
-    "sheet_mean": TraceMetric(
-        key="sheet_mean",
-        column="sheet_mean (0-1)",
-        axis_label="mean sheet contact score (0-1)",
-        invert=True,
-    ),
     "iptm_proxy": TraceMetric(
         key="iptm_proxy",
         column="distogram iptm proxy (0-1)",
         axis_label="distogram interface pTM proxy (0-1)",
     ),
 }
-
-
-def _oriented(values: pd.Series, spec: TraceMetric) -> pd.Series:
-    """The column as the panel plots it, flipping shortfalls back into scores."""
-    return 1.0 - values if spec.invert else values
 
 
 SEED_LINE_WIDTH = 0.8
@@ -905,14 +883,14 @@ def _seed_traces(spec: TraceMetric, trace: pd.DataFrame, target: str, arm: str) 
         ordered = group.sort_values("step (index)")
         axis.plot(
             ordered["step (index)"].to_numpy(),
-            _oriented(ordered[spec.column], spec).to_numpy(),
+            ordered[spec.column].to_numpy(),
             color=apc.vital.hex_code,
             linewidth=SEED_LINE_WIDTH,
             alpha=SEED_LINE_ALPHA,
             zorder=2,
         )
 
-    grouped = _oriented(subset[spec.column], spec).groupby(subset["step (index)"]).median()
+    grouped = subset.groupby("step (index)")[spec.column].median()
     axis.plot(
         grouped.index.to_numpy(),
         grouped.to_numpy(),
@@ -962,9 +940,8 @@ def _trace_lines(spec: TraceMetric, trace: pd.DataFrame, arms: list[str]) -> plt
     endpoints = []
     for arm in arms:
         subset = trace[trace["arm"] == arm]
-        oriented = _oriented(subset[spec.column], spec)
         steps = np.asarray(sorted(subset["step (index)"].unique()))
-        medians = oriented.groupby(subset["step (index)"]).median().to_numpy()
+        medians = subset.groupby("step (index)")[spec.column].median().to_numpy()
         axis.plot(
             steps,
             medians,
