@@ -42,6 +42,13 @@ from analysis import paths
 
 PUBLIC_S3_BUCKET = "2026-esmfold2-secondary-structure-steering"
 ZENODO_RECORD = "PENDING"
+ZENODO_RECORD_NAME = "ZENODO_RECORD"
+"""The name of the constant above, for error messages that ask it to be set.
+
+FIXME: remove this, the guard in ``clear_generated`` and this comment once the
+Zenodo record is minted and ``ZENODO_RECORD`` holds its identifier. The guard
+exists only because there is nowhere to restore from.
+"""
 ZENODO_BASE_URL = f"https://zenodo.org/records/{ZENODO_RECORD}/files"
 
 FORCE_RERUN_ENV = "FORCE_RERUN"
@@ -122,7 +129,6 @@ class DataArtifact:
         print(f"  extracted into {self.extract_dir}", flush=True)
         return self.archive_path
 
-
     def package(self, members: list[Path]) -> Path:
         """Zip ``members`` into the archive, for uploading to the deposit.
 
@@ -131,9 +137,7 @@ class DataArtifact:
         are stored rather than deflated, which is most of what goes in here.
         """
         self.extract_dir.mkdir(parents=True, exist_ok=True)
-        with zipfile.ZipFile(
-            self.archive_path, "w", compression=zipfile.ZIP_DEFLATED
-        ) as archive:
+        with zipfile.ZipFile(self.archive_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
             for member in members:
                 compression = (
                     zipfile.ZIP_STORED
@@ -231,7 +235,22 @@ def clear_generated() -> list[Path]:
     Leaves the archives alone if they happen to be present; ``fetch`` is
     skipped under ``FORCE_RERUN`` anyway, and deleting a download nobody asked
     to replace would be gratuitous.
+
+    Refuses to run while the deposit is unminted. What this deletes is
+    regenerable in principle, but only from Modal at the cost of a full grid,
+    and the archives it spares are whatever was packaged last rather than a
+    copy of what is on disk now. With no record to restore from, a clear is
+    not reversible.
     """
+    if ZENODO_RECORD == "PENDING":
+        raise RuntimeError(
+            f"refusing to delete generated data while {ZENODO_RECORD_NAME} is "
+            f"{ZENODO_RECORD!r}. The campaign tables and reference set on disk "
+            f"are the only copies: the deposit does not exist yet, and the "
+            f"archives in {paths.CAMPAIGNS} and {paths.REFERENCE} are only as "
+            f"current as the last call to package(). Mint the deposit, or "
+            f"package and move the archives aside by hand, before clearing."
+        )
     removed: list[Path] = []
     for path in sorted(paths.REFERENCE.glob("*")):
         if path.name in (".gitkeep", REFERENCE_ARCHIVE):
