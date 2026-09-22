@@ -101,12 +101,7 @@ def missing(
     """Campaigns with no per-design table, as (target, arm) pairs."""
     keys = target_keys if target_keys is not None else list(TARGET_SPECS)
     names = arms if arms is not None else list(ARM_SPECS)
-    return [
-        (key, name)
-        for key in keys
-        for name in names
-        if not status(key, name).is_analysable
-    ]
+    return [(key, name) for key in keys for name in names if not status(key, name).is_analysable]
 
 
 def load_campaign(target_key: str, arm: str) -> pd.DataFrame:
@@ -128,46 +123,6 @@ def load_campaign(target_key: str, arm: str) -> pd.DataFrame:
         )
     frame = pd.read_parquet(results)
     return frame.assign(target=target_key, arm=arm)
-
-
-def load_trace(target_key: str, arm: str) -> pd.DataFrame:
-    """Per-step loss log for one campaign, read from disk.
-
-    One row per optimization step per design. This is what the steering
-    analysis reads: the losses, the weight each steering term carried at that
-    step, and the per-step binding readout.
-    """
-    trace = paths.campaign_trace(target_key, arm)
-    if not trace.is_file():
-        raise FileNotFoundError(
-            f"No loss log for target {target_key!r} arm {arm!r}.\n"
-            f"Expected: {trace}\n"
-            f"Fetch the deposited artifacts from {DEPOSIT_URL}, or regenerate "
-            f"this campaign on your own Modal account with:\n"
-            f"    python -m analysis.campaign run --target {target_key} --arm {arm}"
-        )
-    return pd.read_parquet(trace)
-
-
-def load_all_traces(
-    target_keys: list[str] | None = None,
-    arms: list[str] | None = None,
-) -> pd.DataFrame:
-    """Every available loss log concatenated, skipping absent ones."""
-    keys = target_keys if target_keys is not None else list(TARGET_SPECS)
-    names = arms if arms is not None else list(ARM_SPECS)
-    frames = [
-        load_trace(key, name)
-        for key in keys
-        for name in names
-        if status(key, name).has_trace
-    ]
-    if not frames:
-        raise FileNotFoundError(
-            f"No loss logs found under {paths.CAMPAIGNS}.\n"
-            f"Fetch the deposited artifacts from {DEPOSIT_URL}."
-        )
-    return pd.concat(frames, ignore_index=True)
 
 
 def load_all(
@@ -200,18 +155,3 @@ def derived(name: str) -> Path:
     """Path for a derived table the notebook computes and caches."""
     paths.DERIVED.mkdir(parents=True, exist_ok=True)
     return paths.DERIVED / name
-
-
-def load_or_build(name: str, build: object) -> pd.DataFrame:
-    """Read a cached derived table, computing it once if absent.
-
-    ``build`` is a zero-argument callable returning a DataFrame. Unlike
-    campaigns, derived tables are cheap and deterministic, so recomputing them
-    is safe.
-    """
-    path = derived(name)
-    if path.is_file():
-        return pd.read_parquet(path)
-    frame = build()  # type: ignore[operator]
-    frame.to_parquet(path, index=False)
-    return frame

@@ -10,6 +10,7 @@ in.
 """
 
 from __future__ import annotations
+from pathlib import Path
 
 import pandas as pd
 import pytest
@@ -33,9 +34,9 @@ def a_payload() -> dict[str, object]:
 
 
 def test_routed_fields_stay_out_of_the_row() -> None:
-    record = campaign.design_record(7, {
-        key: value for key, value in a_payload().items() if key != "step_trace"
-    })
+    record = campaign.design_record(
+        7, {key: value for key, value in a_payload().items() if key != "step_trace"}
+    )
     assert record["seed"] == 7
     for key in campaign.ROUTED_KEYS:
         assert key not in record
@@ -43,9 +44,12 @@ def test_routed_fields_stay_out_of_the_row() -> None:
 
 def test_a_populated_nested_field_is_allowed() -> None:
     """The per-critic dicts are nested and fine; only empty ones are not."""
-    record = campaign.design_record(0, {
-        "critic_iptm_by_model": {"fast": 0.9, "cutoff": 0.8},
-    })
+    record = campaign.design_record(
+        0,
+        {
+            "critic_iptm_by_model": {"fast": 0.9, "cutoff": 0.8},
+        },
+    )
     assert record["critic_iptm_by_model"] == {"fast": 0.9, "cutoff": 0.8}
 
 
@@ -61,8 +65,7 @@ def test_the_resulting_row_is_parquet_writable(tmp_path) -> None:
     ("field", "value", "where"),
     [
         ("weights", {}, "weights"),
-        ("schedule_copy", {"waypoints": [{"weights": {}}]},
-         "schedule_copy.waypoints[0].weights"),
+        ("schedule_copy", {"waypoints": [{"weights": {}}]}, "schedule_copy.waypoints[0].weights"),
         ("critic_iptm_by_model", {}, "critic_iptm_by_model"),
         ("seeds_used", [], "seeds_used"),
     ],
@@ -80,9 +83,7 @@ def test_the_vanilla_schedule_is_exactly_what_broke_it() -> None:
     from analysis import targets
 
     unrouted = {"schedule": targets.arm("vanilla").schedule.to_dict()}
-    assert campaign._empty_container_paths(unrouted) == [
-        "schedule.waypoints[0].weights"
-    ]
+    assert campaign._empty_container_paths(unrouted) == ["schedule.waypoints[0].weights"]
 
 
 def test_force_rerun_reads_the_documented_variable(monkeypatch) -> None:
@@ -125,8 +126,7 @@ def test_packaging_round_trips_through_extraction(tmp_path) -> None:
         assert sorted(archive.namelist()) == ["nested/table.parquet", "top.json"]
 
 
-def test_clear_generated_spares_the_archives(tmp_path, monkeypatch) -> None:
-    """FORCE_RERUN skips the fetch, so deleting a download would be gratuitous."""
+def _generated_tree(tmp_path, monkeypatch) -> tuple[Path, Path]:
     from analysis import deposit, paths
 
     reference, campaigns = tmp_path / "reference", tmp_path / "campaigns"
@@ -140,6 +140,29 @@ def test_clear_generated_spares_the_archives(tmp_path, monkeypatch) -> None:
 
     monkeypatch.setattr(paths, "REFERENCE", reference)
     monkeypatch.setattr(paths, "CAMPAIGNS", campaigns)
+    return reference, campaigns
+
+
+def test_clear_generated_refuses_while_the_deposit_is_unminted(tmp_path, monkeypatch) -> None:
+    """The tables on disk are the only copies until a record exists to restore from."""
+    from analysis import deposit
+
+    reference, campaigns = _generated_tree(tmp_path, monkeypatch)
+    monkeypatch.setattr(deposit, "ZENODO_RECORD", "PENDING")
+
+    with pytest.raises(RuntimeError, match=deposit.ZENODO_RECORD_NAME):
+        deposit.clear_generated()
+
+    assert (reference / "natural_binder_composition.csv").is_file()
+    assert (campaigns / "egfr_d3__vanilla").is_dir()
+
+
+def test_clear_generated_spares_the_archives(tmp_path, monkeypatch) -> None:
+    """FORCE_RERUN skips the fetch, so deleting a download would be gratuitous."""
+    from analysis import deposit
+
+    reference, campaigns = _generated_tree(tmp_path, monkeypatch)
+    monkeypatch.setattr(deposit, "ZENODO_RECORD", "17000000")
     removed = deposit.clear_generated()
 
     assert (reference / deposit.REFERENCE_ARCHIVE).is_file()

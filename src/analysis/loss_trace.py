@@ -156,11 +156,7 @@ def append(record: StepRecord, path: Path) -> None:
 
 def frame(flat_rows: list[dict[str, object]]) -> pd.DataFrame:
     """Build a frame from already-flattened rows, sorted by seed and step."""
-    return (
-        pd.DataFrame(flat_rows)
-        .sort_values(["seed", "step (index)"])
-        .reset_index(drop=True)
-    )
+    return pd.DataFrame(flat_rows).sort_values(["seed", "step (index)"]).reset_index(drop=True)
 
 
 def load(path: Path) -> pd.DataFrame:
@@ -197,10 +193,7 @@ def load_campaign(target_key: str, arm: str) -> pd.DataFrame:
 def load_all(target_keys: list[str], arms: list[str]) -> pd.DataFrame:
     """Every available per-step log concatenated, skipping absent ones."""
     frames = [
-        load_campaign(key, name)
-        for key in target_keys
-        for name in arms
-        if is_available(key, name)
+        load_campaign(key, name) for key in target_keys for name in arms if is_available(key, name)
     ]
     if not frames:
         raise FileNotFoundError(

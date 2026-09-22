@@ -36,8 +36,7 @@ class Waypoint:
         unknown = set(self.weights) - set(TERM_SPECS)
         if unknown:
             raise KeyError(
-                f"unknown steering term(s) {sorted(unknown)}; "
-                f"registered: {sorted(TERM_SPECS)}"
+                f"unknown steering term(s) {sorted(unknown)}; registered: {sorted(TERM_SPECS)}"
             )
         negative = sorted(name for name, value in self.weights.items() if value < 0)
         if negative:
@@ -79,8 +78,9 @@ class LossSchedule:
             return "no steering term"
         spans: list[str] = []
         for index, waypoint in enumerate(self.waypoints):
-            named = ", ".join(
-                f"{name} {value:g}" for name, value in sorted(waypoint.weights.items())
+            named = (
+                ", ".join(f"{name} {value:g}" for name, value in sorted(waypoint.weights.items()))
+                or "no steering term"
             )
             if index + 1 < len(self.waypoints):
                 until = self.waypoints[index + 1].step - 1
@@ -111,22 +111,46 @@ def constant(key: str, term_key: str, weight: float) -> LossSchedule:
     )
 
 
-def burst(
-    key: str, term_key: str, burst_weight: float, hold_weight: float, burst_steps: int
-) -> LossSchedule:
-    """One term strong for the first ``burst_steps``, then held lower.
+def released(key: str, term_key: str, weight: float, release_step: int) -> LossSchedule:
+    """One term at one weight until ``release_step``, then nothing.
 
-    The burst covers the steps in which secondary structure is still forming,
-    where a capped barrier still has gradient to give. The hold weight is what
-    is left to keep the structure from drifting back.
+    The complement of :func:`delayed`. A delayed arm asks whether a weight can
+    still move a fold the unsteered objective has committed; a released arm
+    asks whether a fold the weight has already produced survives once the
+    weight is gone, and the rest of the objective is free to pull the design
+    back. Released at step 0 is the unsteered arm and never released is the
+    constant arm, so the two ends of the scan are campaigns that already exist.
     """
-    if burst_steps < 1:
-        raise ValueError(f"burst_steps must be >= 1, got {burst_steps}")
+    if release_step < 1:
+        raise ValueError(f"release_step must be >= 1, got {release_step}")
     name = term(term_key).key
     return LossSchedule(
         key=key,
         waypoints=(
-            Waypoint(step=0, weights={name: burst_weight}),
-            Waypoint(step=burst_steps, weights={name: hold_weight}),
+            Waypoint(step=0, weights={name: weight}),
+            Waypoint(step=release_step, weights={name: 0.0}),
+        ),
+    )
+
+
+def delayed(key: str, term_key: str, weight: float, onset_step: int) -> LossSchedule:
+    """No steering until ``onset_step``, then one term at one weight.
+
+    Up to the onset this is the unsteered objective, step for step, which is
+    what makes it a test rather than another weight: the design loop draws all
+    of its randomness from the seed and the step index and none of it from the
+    trajectory, so a delayed arm and an unsteered arm run on the same seed
+    share their first ``onset_step`` steps exactly. What happens after the
+    onset is therefore the weight acting on a design the unsteered objective
+    has already committed, rather than on an initialization.
+    """
+    if onset_step < 1:
+        raise ValueError(f"onset_step must be >= 1, got {onset_step}")
+    name = term(term_key).key
+    return LossSchedule(
+        key=key,
+        waypoints=(
+            Waypoint(step=0, weights={}),
+            Waypoint(step=onset_step, weights={name: weight}),
         ),
     )

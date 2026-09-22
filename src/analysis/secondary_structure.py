@@ -21,7 +21,6 @@ import numpy as np
 import pydssp
 
 BINDER_CHAIN = "B"
-TARGET_CHAIN = "A"
 MIN_RESIDUES = 8
 
 
@@ -87,9 +86,7 @@ def backbone_residues(chain: struc.AtomArray) -> Backbone:
         res_ids.append(int(res.res_id[0]))
         res_names.append(str(res.res_name[0]))
     if len(coords) < MIN_RESIDUES:
-        raise ValueError(
-            f"only {len(coords)} complete backbone residues, need {MIN_RESIDUES}"
-        )
+        raise ValueError(f"only {len(coords)} complete backbone residues, need {MIN_RESIDUES}")
     return Backbone(
         coords=np.asarray(coords, dtype=float),
         res_ids=np.asarray(res_ids, dtype=int),
@@ -99,9 +96,7 @@ def backbone_residues(chain: struc.AtomArray) -> Backbone:
 
 def assign(backbone: Backbone) -> np.ndarray:
     """Per-residue three-state labels: ``H``, ``E`` or ``-``."""
-    donor = np.array(
-        [0.0 if name == "PRO" else 1.0 for name in backbone.res_names], dtype=float
-    )
+    donor = np.array([0.0 if name == "PRO" else 1.0 for name in backbone.res_names], dtype=float)
     return np.asarray(pydssp.assign(backbone.coords, donor_mask=donor, out_type="c3"))
 
 

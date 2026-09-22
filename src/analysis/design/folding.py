@@ -93,20 +93,16 @@ def fold_and_get_distogram(
     padding = (2, 11)
     padded_design = F.pad(design, padding, mode="constant", value=0)
 
-
     token_lists = torch.argmax(padded_design, dim=-1)
     designed_seq = [
-        [PROTEIN_3TO1[TOKENS[int(tkn.item())]] for tkn in token_list]
-        for token_list in token_lists
+        [PROTEIN_3TO1[TOKENS[int(tkn.item())]] for tkn in token_list] for token_list in token_lists
     ]
     seq_list = [target_seq + "|" + "".join(seq) for seq in designed_seq]
     max_atoms = None if len(seq_list) == 1 else ((len(seq_list[0]) - 1) * 14) // 32 * 32
 
     inputs_list = []
     for seq in seq_list:
-        sequences = {
-            sequence: [str(idx)] for idx, sequence in enumerate(seq.split("|"))
-        }
+        sequences = {sequence: [str(idx)] for idx, sequence in enumerate(seq.split("|"))}
         inputs_raw = StructurePredictionInput(
             sequences=[
                 ProteinInput(id=chain_id, sequence=sequence, msa=None)
@@ -116,8 +112,7 @@ def fold_and_get_distogram(
         inputs_list.append(prepare_esmfold2_tensors(inputs_raw, max_atoms=max_atoms))
 
     inputs = {
-        key: torch.stack([inp[key] for inp in inputs_list], dim=0).cuda()
-        for key in inputs_list[0]
+        key: torch.stack([inp[key] for inp in inputs_list], dim=0).cuda() for key in inputs_list[0]
     }
     inputs["res_type_soft"] = torch.cat(
         (target_one_hot.repeat(design.size(0), 1, 1), padded_design), dim=1

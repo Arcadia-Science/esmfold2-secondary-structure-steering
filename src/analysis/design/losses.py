@@ -22,9 +22,7 @@ def get_mid_points() -> torch.Tensor:
     return (exp_boundaries[:-1] + exp_boundaries[1:]) / 2
 
 
-def binned_entropy(
-    dgram: torch.Tensor, bin_distance: torch.Tensor, cutoff: float
-) -> torch.Tensor:
+def binned_entropy(dgram: torch.Tensor, bin_distance: torch.Tensor, cutoff: float) -> torch.Tensor:
     """Entropy of distance distribution within cutoff (design losses only)."""
 
     bin_mask = ~(bin_distance < cutoff)
@@ -48,6 +46,7 @@ def masked_average(x: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
 
     mask = mask.bool()
     return torch.where(mask, x, 0).sum(-1) / (torch.where(mask, 1, 0).sum(-1) + 1e-8)
+
 
 def compute_contact_loss(
     distogram_logits: torch.Tensor,
@@ -143,9 +142,7 @@ def compute_structure_losses(
     losses["inter_contact_loss"] = compute_inter_contact_loss(
         distogram_logits, binder_length, bin_distance
     )
-    losses["glob_loss"] = compute_globularity_loss(
-        distogram_logits, binder_length, bin_distance
-    )
+    losses["glob_loss"] = compute_globularity_loss(distogram_logits, binder_length, bin_distance)
     B = distogram_logits.size(0)
     total = torch.tensor([0.0] * B, device=distogram_logits.device, requires_grad=True)
     total = total + LOSS_WEIGHTS["intra_contact"] * losses["intra_contact_loss"]

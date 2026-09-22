@@ -56,9 +56,7 @@ def to_atom_array(
         element_idx,
         is_not_pad,
     ) in enumerate(
-        zip(
-            coords, atom_to_token, ref_atom_name_chars, ref_element, atom_attention_mask
-        )
+        zip(coords, atom_to_token, ref_atom_name_chars, ref_element, atom_attention_mask)
     ):
         if not is_not_pad:
             continue
@@ -72,17 +70,13 @@ def to_atom_array(
                 element=ELEMENTS[element_idx],
                 ins_code=" ",
                 hetero=mol_type[token_idx] == MOL_TYPE_NONPOLYMER,
-                b_factor=float(plddt_per_atom[atom_i])
-                if plddt_per_atom is not None
-                else 0.0,
+                b_factor=float(plddt_per_atom[atom_i]) if plddt_per_atom is not None else 0.0,
             )
         )
     return biotite.structure.array(atoms)
 
 
-def build_complex(
-    inputs: dict[str, torch.Tensor], output: dict[str, Any]
-) -> ProteinComplex:
+def build_complex(inputs: dict[str, torch.Tensor], output: dict[str, Any]) -> ProteinComplex:
     """Build ProteinComplex from model output."""
     plddt_per_atom = output.get("plddt_per_atom")
     if plddt_per_atom is not None:

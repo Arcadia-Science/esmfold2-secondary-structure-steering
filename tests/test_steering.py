@@ -15,6 +15,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import math
+from dataclasses import replace
 
 import numpy as np
 import pandas as pd
@@ -112,15 +113,6 @@ def test_ideal_geometry_has_the_distances_the_terms_assume() -> None:
     assert offset_distance(strand, 2) == pytest.approx(6.6, abs=0.1)
 
 
-def test_helix_penalty_is_high_on_a_helix_and_low_on_a_strand(
-    helix: torch.Tensor, strand: torch.Tensor, bins: torch.Tensor
-) -> None:
-    on_helix = float(steering.helix_penalty_loss(helix, BINDER_LENGTH, bins)[0])
-    on_strand = float(steering.helix_penalty_loss(strand, BINDER_LENGTH, bins)[0])
-    assert on_helix > 0.99
-    assert on_strand < 0.01
-
-
 def test_helix_mean_is_high_on_a_helix_and_low_on_a_strand(
     helix: torch.Tensor, strand: torch.Tensor, bins: torch.Tensor
 ) -> None:
@@ -128,126 +120,6 @@ def test_helix_mean_is_high_on_a_helix_and_low_on_a_strand(
     on_strand = float(steering.helix_mean_loss(strand, BINDER_LENGTH, bins)[0])
     assert on_helix > 0.99
     assert on_strand < 0.01
-
-
-@pytest.mark.parametrize("helical_residues", [16, 22, 28, 34])
-def test_helix_mean_ranks_partly_helical_binders_where_the_top_12_saturates(
-    helical_residues: int, bins: torch.Tensor
-) -> None:
-    """The property ``helix_mean`` exists for, and the regression guard for it.
-
-    A chimera of a helix followed by a distant strand is built at four helix
-    lengths. A helix of ``n`` residues carries ``n - 4`` rungs entirely inside
-    it, since the last four straddle the junction, so 16 residues is the
-    shortest helix that fills the twelve-wide pooling window. Every length here
-    fills it, ``helix_penalty`` reads them all as fully helical, and
-    ``helix_mean`` separates them in proportion to the helix each carries.
-    """
-    coords = np.concatenate(
-        [
-            helix_coords(helical_residues),
-            strand_coords(BINDER_LENGTH - helical_residues, y=30.0),
-        ]
-    )
-    distogram = distogram_from_coords(coords)
-    pooled = float(steering.helix_penalty_loss(distogram, BINDER_LENGTH, bins)[0])
-    averaged = float(steering.helix_mean_loss(distogram, BINDER_LENGTH, bins)[0])
-
-    assert pooled > 0.99
-    expected = (helical_residues - steering.HELIX_PENALTY_OFFSET) / (
-        BINDER_LENGTH - steering.HELIX_PENALTY_OFFSET
-    )
-    assert averaged == pytest.approx(expected, abs=0.02)
-
-
-def test_helix_mean_keeps_a_gradient_where_the_capped_barrier_has_none(
-    helix: torch.Tensor, bins: torch.Tensor
-) -> None:
-    logits = helix.clone().requires_grad_(True)
-
-    capped = steering.helix_logcap_loss(logits, BINDER_LENGTH, bins).sum()
-    capped.backward()
-    capped_norm = float(logits.grad.norm())
-
-    logits.grad = None
-    averaged = steering.helix_mean_loss(logits, BINDER_LENGTH, bins).sum()
-    averaged.backward()
-    averaged_norm = float(logits.grad.norm())
-
-    assert capped_norm == pytest.approx(0.0, abs=1e-12)
-    assert averaged_norm > 0.0
-
-
-def test_helix_i2_separates_helix_from_strand_spacing(
-    helix: torch.Tensor, strand: torch.Tensor, bins: torch.Tensor
-) -> None:
-    on_helix = float(steering.helix_i2_loss(helix, BINDER_LENGTH, bins)[0])
-    on_strand = float(steering.helix_i2_loss(strand, BINDER_LENGTH, bins)[0])
-    assert on_helix > 0.9
-    assert on_strand < 0.01
-
-
-def test_sheet_terms_prefer_a_hairpin_to_a_helix(
-    helix: torch.Tensor, hairpin: torch.Tensor, bins: torch.Tensor
-) -> None:
-    for term in ("sheet_contact", "sheet_mean", "sheet_ladder"):
-        compute = steering.TERM_SPECS[term].compute
-        on_helix = float(compute(helix, BINDER_LENGTH, bins)[0])
-        on_hairpin = float(compute(hairpin, BINDER_LENGTH, bins)[0])
-        assert on_helix > 0.9, term
-        assert on_hairpin < on_helix - 0.5, term
-
-
-def test_sheet_ladder_needs_a_registered_partner(
-    strand: torch.Tensor, hairpin: torch.Tensor, bins: torch.Tensor
-) -> None:
-    lone = float(steering.sheet_ladder_loss(strand, BINDER_LENGTH, bins)[0])
-    paired = float(steering.sheet_ladder_loss(hairpin, BINDER_LENGTH, bins)[0])
-    assert lone > 0.99
-    assert paired < 0.2
-
-
-def test_sheet_gate_rejects_a_helix_at_sheet_range(bins: torch.Tensor) -> None:
-    """A helix has 5.5 A contacts too; only the i to i+2 gate excludes them."""
-    helix = distogram_from_coords(helix_coords(BINDER_LENGTH))
-    strand = distogram_from_coords(strand_coords(BINDER_LENGTH))
-    contact = steering.contact_probability_matrix(helix, bins, 5.5)
-    assert float(contact.max()) > 0.5
-
-    def gate(logits: torch.Tensor) -> torch.Tensor:
-        expected = steering.expected_distance_matrix(logits, bins)
-        return steering.strand_spacing_gate(
-            expected,
-            steering.SHEET_CONTACT_EXT_CENTER,
-            steering.SHEET_CONTACT_EXT_ALPHA,
-        )
-
-    assert float(gate(helix)[0, : BINDER_LENGTH - 2].max()) < 0.1
-    assert float(gate(strand)[0, : BINDER_LENGTH - 2].min()) > 0.9
-
-
-def test_helix_logcap_clamps_and_stops_producing_gradient(bins: torch.Tensor) -> None:
-    logits = distogram_from_coords(helix_coords(BINDER_LENGTH)).requires_grad_(True)
-    capped = steering.helix_logcap_loss(logits, BINDER_LENGTH, bins)
-    uncapped = steering.helix_log_loss(logits, BINDER_LENGTH, bins)
-    assert float(capped.detach()[0]) == pytest.approx(steering.HELIX_LOG_CAP)
-    assert float(uncapped.detach()[0]) > steering.HELIX_LOG_CAP
-    gradient = torch.autograd.grad(capped.sum(), logits)[0]
-    assert float(gradient.abs().max()) == 0.0
-
-
-def test_helix_logcap_tracks_helix_log_below_the_clamp(bins: torch.Tensor) -> None:
-    logits = distogram_from_coords(strand_coords(BINDER_LENGTH))
-    capped = steering.helix_logcap_loss(logits, BINDER_LENGTH, bins)
-    uncapped = steering.helix_log_loss(logits, BINDER_LENGTH, bins)
-    assert float(uncapped[0]) < steering.HELIX_LOG_CAP
-    assert torch.allclose(capped, uncapped)
-
-
-def test_the_clamp_binds_at_one_minus_exp_minus_cap() -> None:
-    assert steering.CLAMP_CONTACT_PROBABILITY == pytest.approx(0.8647, abs=1e-4)
-    barrier = -math.log(1.0 - steering.CLAMP_CONTACT_PROBABILITY)
-    assert barrier == pytest.approx(steering.HELIX_LOG_CAP)
 
 
 def test_terms_read_only_the_binder_block(bins: torch.Tensor) -> None:
@@ -268,32 +140,26 @@ def test_vanilla_measures_every_term_and_steers_none(
 ) -> None:
     logits = helix.requires_grad_(True)
     result = steering.compute_steering_losses(logits, BINDER_LENGTH, bins, {})
-    assert set(result.terms) == set(steering.TERM_KEYS)
+    assert set(result.terms) == set(steering.TERM_SPECS)
     assert all(not value.requires_grad for value in result.terms.values())
     assert float(result.total.detach()[0]) == 0.0
     assert not result.total.requires_grad
 
 
-def test_only_weighted_terms_carry_gradient(
-    helix: torch.Tensor, bins: torch.Tensor
-) -> None:
+def test_only_weighted_terms_carry_gradient(helix: torch.Tensor, bins: torch.Tensor) -> None:
     logits = helix.requires_grad_(True)
-    result = steering.compute_steering_losses(
-        logits, BINDER_LENGTH, bins, {"sheet_contact": 0.2}
-    )
-    assert result.terms["sheet_contact"].requires_grad
-    assert not result.terms["helix_penalty"].requires_grad
-    assert float(result.terms["helix_penalty"].detach()[0]) > 0.99
+    weighted = steering.compute_steering_losses(logits, BINDER_LENGTH, bins, {"helix_mean": 0.2})
+    assert weighted.terms["helix_mean"].requires_grad
+    measured = steering.compute_steering_losses(logits, BINDER_LENGTH, bins, {})
+    assert not measured.terms["helix_mean"].requires_grad
 
 
 def test_total_is_the_weighted_sum_of_the_active_terms(
     hairpin: torch.Tensor, bins: torch.Tensor
 ) -> None:
-    weights = {"helix_logcap": 0.2, "sheet_mean": 0.5}
+    weights = {"helix_mean": 0.5}
     result = steering.compute_steering_losses(hairpin, BINDER_LENGTH, bins, weights)
-    expected = sum(
-        weight * float(result.terms[name][0]) for name, weight in weights.items()
-    )
+    expected = sum(weight * float(result.terms[name][0]) for name, weight in weights.items())
     assert float(result.total[0]) == pytest.approx(expected)
 
 
@@ -301,15 +167,13 @@ def test_batch_elements_are_scored_independently(bins: torch.Tensor) -> None:
     helix = distogram_from_coords(helix_coords(BINDER_LENGTH))
     strand = distogram_from_coords(strand_coords(BINDER_LENGTH))
     batched = torch.cat([helix, strand], dim=0)
-    values = steering.helix_penalty_loss(batched, BINDER_LENGTH, bins)
+    values = steering.helix_mean_loss(batched, BINDER_LENGTH, bins)
     assert values.shape == (2,)
     assert float(values[0]) > 0.99
     assert float(values[1]) < 0.01
 
 
-def test_unknown_weight_name_is_rejected(
-    helix: torch.Tensor, bins: torch.Tensor
-) -> None:
+def test_unknown_weight_name_is_rejected(helix: torch.Tensor, bins: torch.Tensor) -> None:
     with pytest.raises(KeyError, match="unknown steering term"):
         steering.compute_steering_losses(helix, BINDER_LENGTH, bins, {"helix": 1.0})
 
@@ -329,9 +193,7 @@ def test_binder_longer_than_the_distogram_is_rejected(
         steering.compute_steering_losses(helix, BINDER_LENGTH + 1, bins, {})
 
 
-def test_cutoff_outside_the_bin_range_is_rejected(
-    helix: torch.Tensor, bins: torch.Tensor
-) -> None:
+def test_cutoff_outside_the_bin_range_is_rejected(helix: torch.Tensor, bins: torch.Tensor) -> None:
     with pytest.raises(ValueError, match="excludes every distogram bin"):
         steering.contact_probability_matrix(helix, bins, 0.5)
     with pytest.raises(ValueError, match="must be positive"):
@@ -339,35 +201,16 @@ def test_cutoff_outside_the_bin_range_is_rejected(
 
 
 def test_every_term_is_catalogued_with_a_unit() -> None:
-    table = steering.term_table()
-    assert list(table["term"]) == list(steering.TERM_KEYS)
-    assert table["unit"].ne("").all()
-    assert table["family"].isin([steering.HELIX_FAMILY, steering.SHEET_FAMILY]).all()
+    assert steering.TERM_SPECS
+    for key, spec in steering.TERM_SPECS.items():
+        assert spec.key == key
+        assert spec.unit != ""
 
 
 def test_constant_schedule_holds_for_the_whole_run() -> None:
-    arm = schedule.constant("w02", "helix_logcap", 0.2)
-    assert arm.weights_at(0) == {"helix_logcap": 0.2}
-    assert arm.weights_at(149) == {"helix_logcap": 0.2}
-
-
-def test_burst_switches_exactly_at_the_boundary() -> None:
-    arm = schedule.burst("burst", "helix_logcap", 0.5, 0.1, burst_steps=20)
-    assert arm.weights_at(0) == {"helix_logcap": 0.5}
-    assert arm.weights_at(19) == {"helix_logcap": 0.5}
-    assert arm.weights_at(20) == {"helix_logcap": 0.1}
-    assert arm.weights_at(149) == {"helix_logcap": 0.1}
-
-
-def test_a_later_waypoint_leaves_unmentioned_terms_alone() -> None:
-    arm = schedule.LossSchedule(
-        key="mixed",
-        waypoints=(
-            schedule.Waypoint(step=0, weights={"helix_logcap": 0.5, "sheet_mean": 0.1}),
-            schedule.Waypoint(step=10, weights={"helix_logcap": 0.2}),
-        ),
-    )
-    assert arm.weights_at(10) == {"helix_logcap": 0.2, "sheet_mean": 0.1}
+    arm = schedule.constant("w02", "helix_mean", 0.2)
+    assert arm.weights_at(0) == {"helix_mean": 0.2}
+    assert arm.weights_at(149) == {"helix_mean": 0.2}
 
 
 def test_vanilla_sets_no_weights() -> None:
@@ -381,20 +224,20 @@ def test_vanilla_sets_no_weights() -> None:
         ((), "at least one waypoint"),
         (
             (
-                schedule.Waypoint(0, {"helix_logcap": 0.2}),
-                schedule.Waypoint(5, {"helix_logcap": 0.1}),
-                schedule.Waypoint(3, {"helix_logcap": 0.3}),
+                schedule.Waypoint(0, {"helix_mean": 0.2}),
+                schedule.Waypoint(5, {"helix_mean": 0.1}),
+                schedule.Waypoint(3, {"helix_mean": 0.3}),
             ),
             "sorted by step",
         ),
         (
             (
-                schedule.Waypoint(0, {"helix_logcap": 0.2}),
-                schedule.Waypoint(0, {"helix_logcap": 0.1}),
+                schedule.Waypoint(0, {"helix_mean": 0.2}),
+                schedule.Waypoint(0, {"helix_mean": 0.1}),
             ),
             "distinct steps",
         ),
-        ((schedule.Waypoint(5, {"helix_logcap": 0.2}),), "must be at step 0"),
+        ((schedule.Waypoint(5, {"helix_mean": 0.2}),), "must be at step 0"),
     ],
 )
 def test_malformed_schedules_are_rejected(
@@ -408,21 +251,19 @@ def test_waypoint_validates_its_own_weights() -> None:
     with pytest.raises(KeyError, match="unknown steering term"):
         schedule.Waypoint(step=0, weights={"helix": 0.2})
     with pytest.raises(ValueError, match="must be >= 0"):
-        schedule.Waypoint(step=0, weights={"helix_logcap": -0.2})
+        schedule.Waypoint(step=0, weights={"helix_mean": -0.2})
     with pytest.raises(ValueError, match="must be >= 0"):
         schedule.Waypoint(step=-1, weights={})
 
 
 def test_schedule_summary_and_record_describe_the_arm() -> None:
-    arm = schedule.burst("burst", "helix_logcap", 0.5, 0.1, burst_steps=20)
-    assert arm.summary() == (
-        "helix_logcap 0.5 for steps 0-19; helix_logcap 0.1 from step 20 on"
-    )
+    arm = schedule.released("release20", "helix_mean", 0.5, 20)
+    assert arm.summary() == ("helix_mean 0.5 for steps 0-19; helix_mean 0 from step 20 on")
     record = arm.to_dict()
-    assert record["key"] == "burst"
+    assert record["key"] == "release20"
     assert record["waypoints"] == [
-        {"step": 0, "weights": {"helix_logcap": 0.5}},
-        {"step": 20, "weights": {"helix_logcap": 0.1}},
+        {"step": 0, "weights": {"helix_mean": 0.5}},
+        {"step": 20, "weights": {"helix_mean": 0.0}},
     ]
     assert json.loads(json.dumps(record)) == record
 
@@ -430,7 +271,7 @@ def test_schedule_summary_and_record_describe_the_arm() -> None:
 def a_record(step: int = 0, seed: int = 0) -> loss_trace.StepRecord:
     return loss_trace.StepRecord(
         target="pdl1_igv",
-        arm="helix_logcap_w02",
+        arm="helix_mean_w20",
         seed=seed,
         step=step,
         steps=150,
@@ -442,8 +283,8 @@ def a_record(step: int = 0, seed: int = 0) -> loss_trace.StepRecord:
         sequence_entropy_bits=1.97,
         distogram_iptm_proxy=0.42,
         iptm=None,
-        losses={"total_loss": 3.5, "helix_logcap": 1.2},
-        weights={"helix_logcap": 0.2},
+        losses={"total_loss": 3.5, "helix_mean": 1.2},
+        weights={"helix_mean": 0.2},
     )
 
 
@@ -452,8 +293,7 @@ def test_every_logged_column_states_its_unit() -> None:
     quantities = [
         key
         for key in row
-        if key
-        not in ("target", "arm", "seed", "inversion model", "binder sequence")
+        if key not in ("target", "arm", "seed", "inversion model", "binder sequence")
     ]
     assert quantities
     for key in quantities:
@@ -463,9 +303,8 @@ def test_every_logged_column_states_its_unit() -> None:
 
 def test_logged_losses_use_their_own_units() -> None:
     row = a_record().row()
-    assert "helix_logcap (nats)" in row
+    assert "helix_mean (0-1)" in row
     assert "total_loss (dimensionless)" in row
-    assert "sheet_contact (0-1)" in loss_trace.loss_column("sheet_contact")
 
 
 def test_an_unregistered_loss_cannot_enter_the_log() -> None:
@@ -476,9 +315,10 @@ def test_an_unregistered_loss_cannot_enter_the_log() -> None:
 
 
 def test_a_term_the_schedule_omits_is_null_not_zero() -> None:
-    row = a_record().row()
-    assert row[loss_trace.weight_column("helix_logcap")] == 0.2
-    assert row[loss_trace.weight_column("sheet_mean")] is None
+    column = loss_trace.weight_column("helix_mean")
+    assert a_record().row()[column] == 0.2
+    unsteered = replace(a_record(), weights={})
+    assert unsteered.row()[column] is None
 
 
 def test_the_log_round_trips_through_json_lines(tmp_path) -> None:
@@ -510,6 +350,4 @@ def test_sequence_entropy_is_measured_in_bits() -> None:
     collapsed[..., 0] = 1.0
     uniform = torch.full((1, 30, 20), 1.0 / 20.0)
     assert loss_trace.sequence_entropy_bits(collapsed) == pytest.approx(0.0, abs=1e-4)
-    assert loss_trace.sequence_entropy_bits(uniform) == pytest.approx(
-        math.log2(20), abs=1e-4
-    )
+    assert loss_trace.sequence_entropy_bits(uniform) == pytest.approx(math.log2(20), abs=1e-4)

@@ -156,8 +156,7 @@ def length_matched(
 
     picks: list[int] = []
     grouped = {
-        key: frame.index.to_numpy()
-        for key, frame in natural.groupby(natural_bin, observed=True)
+        key: frame.index.to_numpy() for key, frame in natural.groupby(natural_bin, observed=True)
     }
     for key, weight in weights.items():
         pool = grouped.get(key)

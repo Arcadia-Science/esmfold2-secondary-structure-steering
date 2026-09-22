@@ -1,26 +1,24 @@
 """Publication figures.
 
-Two colour schemes, each matched to what it encodes.
+Three colour schemes, each matched to what it encodes.
 
 The Question 1 panels use one hue per secondary-structure state, so a panel is
-read by its own colour rather than by a shared key. The Question 2 panels
-encode steering weight, which is ordered, so they use a single-hue sequential
-ramp from the Arcadia blue shades rather than categorical hues. Assigning five
-categorical hues to the five targets was the obvious alternative and it fails:
-the first five of the primary ordered palette put aegean against aster at a
-colour difference of 4.1 under simulated dichromacy, and 6.8 even in normal
-vision. Targets are therefore a categorical axis, not a colour.
+read by its own colour rather than by a shared key.
 
-The ramp is the darkest four steps of the house blue shades, vital through
-dusk, taken in the palette's own order. Its worst adjacent separation is 11.3
-under simulated deuteranopia and its worst pair anywhere is 10.4 under
-simulated protanopia, both above the 8 needed to stay distinguishable. Its
-lightest step sits below 3:1 contrast against the chart surface, so every
-figure using it carries a legend or names its columns on an axis, and the
-medians it plots are also tabulated in the surrounding text.
+Steering weight is ordered, so the panels that encode it use a single-hue
+sequential ramp rather than categorical hues, and that ramp is grey: the
+quantity plotted against it is already carried by a hue of its own, and a grey
+weight scale leaves that hue to it. The unsteered arm is the ramp's lightest
+step rather than a colour beside it, because a weight of zero is the low end
+of the scale and not a separate condition. Five steps run light to dark from
+chateau to pitch, with a worst pair anywhere of 12.7 over the three vision
+models.
 
-The unsteered arm takes bark, a warm grey off the ramp, because the absence of
-a steering weight is not a step on the weight scale.
+Targets are categorical and take five hues, but not the house categorical
+order, which fails at five: its first five put aegean against aster at a colour
+difference of 4 under simulated dichromacy and 7 even in normal vision. The
+five in use were found by search, and are recorded with their measurements at
+``TARGET_COLORS``.
 
 Composition in Question 1 is always plotted against chain length. Short natural
 proteins are helix-biased too, so a single pooled comparison would confound
@@ -34,6 +32,7 @@ import arcadia_pycolor as apc
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+from matplotlib.colors import to_hex, to_rgba
 
 apc.mpl.setup()
 
@@ -65,35 +64,31 @@ FONT_SIZE_KEYS = (
 BAR_WIDTH = 0.4
 
 WEIGHT_RAMP = (
-    apc.vital.hex_code,
-    apc.aegean.hex_code,
-    apc.lapis.hex_code,
-    apc.dusk.hex_code,
+    apc.bark.hex_code,
+    apc.mud.hex_code,
+    apc.crow.hex_code,
+    apc.pitch.hex_code,
 )
-"""Steering weight as a light-to-dark ramp, the darkest step the strongest.
+"""The steered weights, continuing the ramp down from the unsteered step.
 
-These are the darkest four steps of the house ``blue_shades`` palette, taken in
-its own order rather than picked by eye. A panel's weights take the darkest
-steps available, so the column where the fold has converted is the darkest one
-whatever the panel's length, and the x axis carries the weight itself. Colour is
-redundant with position rather than the only way to read a column.
+Grey because the quantity these panels follow already has a hue: the helix term
+is red wherever it is measured here, and a coloured weight scale would compete
+with it. Colour is redundant with position rather than the only way to read a
+line, since the x axis carries the weight itself.
 
-Adjacent steps are separated by at least 11.3 under simulated deuteranopia,
-which is the worst of the three vision models. Extending past four means
-reaching for ``sky``, whose contrast against the chart surface is too low to
-carry a dot, so a fifth weight needs a different encoding rather than a fifth
-step.
+With the unsteered step ahead of them the five run 0.76, 0.63, 0.48, 0.28 and
+0.14 in OKLab lightness, so darkness increases with weight the whole way and no
+step is lighter than a weaker one. Adjacent steps are separated by at least
+12.7 over normal vision, simulated protanopia and simulated deuteranopia.
 """
 
-BASELINE_COLOR = apc.bark.hex_code
-"""The unsteered column, a warm grey deliberately off the blue ramp.
+BASELINE_COLOR = apc.chateau.hex_code
+"""The unsteered arm, the lightest step of the same ramp.
 
-Unsteered is the absence of a weight, not a step on the scale, so it sits off
-the ramp. Its worst separation from a ramp step is 10.4 under simulated
-protanopia, above the 8 needed to stay distinguishable, but the palette's worst
-normal-vision pair is 11.4, below the 15 a categorical palette would need. That
-is tolerable only because these columns are separated by position and named on
-the x axis, so colour never carries identity on its own here.
+A weight of zero is the low end of the weight scale, so it takes the low end of
+the ramp rather than a colour off it. The ramp stops here rather than reaching
+for a paler grey, because a pale grey line has no contrast against the chart
+surface to spend.
 """
 
 ARM_COLORS = {
@@ -128,12 +123,13 @@ ARM_WEIGHT_LABELS = {
 }
 """Weights as bare numbers, with the unsteered arm written as the zero it is.
 
-Panels whose y axis label is long enough to narrow the axes cannot fit the word
-"Unsteered" beside a neighbouring tick, and the x axis already names the
-quantity, so the unsteered arm is a weight of zero like any other.
+At this font "Unsteered" is wider than the one unit between ticks, so a narrow
+panel cannot spell it without the label running into its neighbour. The x axis
+names the quantity, so the unsteered arm becomes a weight of zero like any
+other.
 """
 
-LEGEND_TITLE = "Steering weight (dimensionless)"
+LEGEND_TITLE = "Steering weight"
 
 LABEL_MIN_GAP_FRACTION = 0.07
 """Least vertical room a direct label needs, as a fraction of the axis span.
@@ -146,27 +142,108 @@ collision rule, which is what this sets.
 """
 
 
-def _spread_labels(values: list[float], minimum_gap: float) -> list[float]:
+@dataclass(frozen=True)
+class _LabelBand:
+    """The room a column of direct labels has, and the least gap between two.
+
+    ``floor`` and ``ceiling`` are the axis limits pulled in by half a gap: a
+    gap is the room one label needs, so half of it is the room from a label's
+    centre to its own edge, and a label placed at the floor then clears the
+    spine instead of sitting on it.
+    """
+
+    gap: float
+    floor: float
+    ceiling: float
+
+
+@dataclass(frozen=True)
+class _LabelCluster:
+    """Labels close enough to each other that they are placed as one block."""
+
+    members: list[int]
+    total: float
+    band: _LabelBand
+
+    @property
+    def height(self) -> float:
+        return (len(self.members) - 1) * self.band.gap
+
+    @property
+    def start(self) -> float:
+        centre = self.total / len(self.members)
+        return max(min(centre - self.height / 2, self.band.ceiling - self.height), self.band.floor)
+
+    @property
+    def top(self) -> float:
+        return self.start + self.height
+
+    def merged(self, other: _LabelCluster) -> _LabelCluster:
+        return _LabelCluster(self.members + other.members, self.total + other.total, self.band)
+
+
+def _spread_labels(
+    values: list[float], minimum_gap: float, bounds: tuple[float, float]
+) -> list[float]:
     """Nudge label positions apart while keeping their order.
 
     Two lines can finish close enough that their labels overlap and one hides
     the other, which is worse than a cramped panel because the hidden series
-    looks absent. Walking the labels from the bottom and pushing each one up to
-    clear its neighbour keeps every label visible and keeps them in the same
-    order as the values they name, so a label never sits beside the wrong line.
+    looks absent.
+
+    Labels that collide are placed as a block, evenly spaced and centred on the
+    mean of the positions they came from, so a colliding pair splits the
+    distance between them rather than one label carrying all of it. Pushing
+    every label up to clear the one below is simpler, but it leaves the upper
+    label of a pair a full gap away from its own line while the lower one still
+    sits exactly on its own.
+
+    A block is held inside ``bounds``, the limits of the axis it is drawn on,
+    because centring one that reaches an edge would put a label on the spine or
+    past it. Blocks merge until none of them collide, which is a loop rather
+    than a single pass because holding a block inside the bounds can move it
+    into its neighbour. Every label stays visible and in the same order as the
+    values they name, so a label never sits beside the wrong line.
     """
+    band = _LabelBand(minimum_gap, bounds[0] + minimum_gap / 2, bounds[1] - minimum_gap / 2)
     order = sorted(range(len(values)), key=lambda index: values[index])
+    clusters = [_LabelCluster([index], values[index], band) for index in order]
+    collided = True
+    while collided:
+        collided = False
+        for position in range(len(clusters) - 1):
+            lower, upper = clusters[position], clusters[position + 1]
+            if upper.start - lower.top < minimum_gap:
+                clusters[position : position + 2] = [lower.merged(upper)]
+                collided = True
+                break
     adjusted = list(values)
-    for earlier, later in zip(order, order[1:], strict=False):
-        shortfall = minimum_gap - (adjusted[later] - adjusted[earlier])
-        if shortfall > 0:
-            adjusted[later] += shortfall
+    for cluster in clusters:
+        for rank, index in enumerate(cluster.members):
+            adjusted[index] = cluster.start + rank * minimum_gap
     return adjusted
 
 
-DOT_SIZE_POINTS = 46
-DOT_OFFSET = 0.26
 TRACE_LINE_WIDTH = 2.0
+SCAN_LINE_WIDTH = 3.4
+SCAN_MARKER_SIZE = 9
+"""Heavier than the per-step traces. Those carry 150 points each and thin lines
+keep them apart; these carry five, so the line is the mark."""
+
+SCAN_TRACE_SIZE_INCHES = (5.25, 5.8)
+SCAN_COMPOSITION_SIZE_INCHES = (5.3, 5.8)
+"""Sized to fill a half-width layout cell rather than to a chosen aspect.
+
+Two of these sit in a row of a body column that stops at 850 CSS pixels, so a
+cell is about 425 and a figure has to reach it or leave the difference as a gap
+between the panels. At 150 dpi Quarto writes half the rendered pixels into the
+tag, and the tight bounding box takes in whatever sits outside the axes, so the
+two panel kinds reach the same rendered width from different figure widths: the
+trace panel hangs its line labels past the axes and the composition panel does
+not.
+"""
+
+SCAN_LEGEND_ANCHOR = (0.5, -0.42)
 
 PANEL_SIZE_INCHES = (6.8, 5.4)
 """One panel of a three-panel row.
@@ -176,21 +253,6 @@ panel drawn small enough to sit three-across on the page would have labels
 that overflow it. Drawing at the house scale and letting Quarto scale the
 image down keeps the type in proportion instead.
 """
-
-
-def cliffs_delta(a: np.ndarray, b: np.ndarray) -> float:
-    """P(a > b) minus P(a < b), computed exactly over all pairs.
-
-    A rank-only effect size, which is what these distributions need: helix and
-    sheet fractions are bounded at zero and one, and the sheet distribution is
-    heavily zero-inflated, so a mean and standard deviation describe a shape the
-    data does not have.
-    """
-    ordered = np.sort(a)
-    n = len(a) * len(b)
-    lower = np.searchsorted(ordered, b, side="left").sum()
-    upper = np.searchsorted(ordered, b, side="right").sum()
-    return (1 - upper / n) - (lower / n)
 
 
 @dataclass(frozen=True)
@@ -344,6 +406,26 @@ TARGET_LABELS = {
 """Protein names only. Which domain of each is the construct is a fact for the
 figure caption, not for five x-axis labels that have to stay narrow."""
 
+TARGET_COLORS = {
+    "egfr_d3": apc.aegean.hex_code,
+    "pdgfrb_d2d3": apc.matcha.hex_code,
+    "pdl1_igv": apc.tanzanite.hex_code,
+    "ctla4_igv": apc.terracotta.hex_code,
+    "cd45_d3d4": apc.rose.hex_code,
+}
+"""One hue per target, attached to the target rather than to its rank, so a
+panel that reorders the targets does not repaint them.
+
+The house categorical order is not usable at five series here. Simulating
+protanopia and deuteranopia through the Vienot-Brettel-Mollon transform and
+measuring OKLab dE, its first five colours put aegean against aster at dE 4 and
+amber against lime at 6, and aegean against aster reads 7 even in normal
+vision. This set was chosen by searching the house colours for the five whose
+worst pair is furthest apart: it holds dE 19 in normal vision and 11 under
+either simulation, against a target of 8. The three secondary-structure states
+are excluded from the search, so no target wears the colour of a state.
+"""
+
 
 @dataclass(frozen=True)
 class Metric:
@@ -352,125 +434,44 @@ class Metric:
     key: str
     column: str
     axis_label: str
+    design_label: str
 
 
 METRICS: dict[str, Metric] = {
     "helix": Metric(
         key="helix",
         column="helix (fraction 0-1)",
-        axis_label="median helix fraction (0-1)",
+        axis_label="Median helix (fraction 0-1)",
+        design_label="Helix (fraction 0-1)",
     ),
     "sheet": Metric(
         key="sheet",
         column="sheet (fraction 0-1)",
-        axis_label="median sheet fraction (0-1)",
+        axis_label="Median sheet (fraction 0-1)",
+        design_label="Sheet (fraction 0-1)",
     ),
     "iptm": Metric(
         key="iptm",
         column="iptm (0-1)",
-        axis_label="median interface pTM (0-1)",
+        axis_label="Median interface pTM (0-1)",
+        design_label="Interface pTM (0-1)",
     ),
     "plddt": Metric(
         key="plddt",
         column="binder pLDDT (0-100)",
-        axis_label="median binder pLDDT (0-100)",
+        axis_label="Median binder pLDDT (0-100)",
+        design_label="Binder pLDDT (0-100)",
     ),
 }
+"""Labels are written capitalized rather than left to the house styling, which
+capitalizes an axis label only when every letter in it is lowercase and so
+would pass over pTM and pLDDT."""
 
 
-def _median_and_quartiles(values: pd.Series) -> tuple[float, float, float]:
-    """Median with the distances to the first and third quartile."""
-    median = float(values.median())
-    lower = median - float(values.quantile(0.25))
-    upper = float(values.quantile(0.75)) - median
-    return median, lower, upper
-
-
-def steering_dots(
-    designs: pd.DataFrame,
-    metric: str,
-    target_order: list[str],
-    arms: list[str],
-) -> plt.Figure:
-    """One quantity against target, with a dot per steering weight.
-
-    Dots rather than bars because two of the four quantities this draws,
-    interface pTM and binder pLDDT, do not live on a scale whose zero means
-    anything. A bar would assert a baseline the data does not have. Whiskers
-    span the interquartile range.
-
-    The median rather than the mean, because helix fraction under steering is
-    bimodal and sheet fraction is zero-inflated, so neither distribution is
-    described by a centre and a width.
-    """
-    spec = METRICS[metric]
-    scaled = {key: plt.rcParams[key] * FONT_SCALE for key in FONT_SIZE_KEYS}
-    with plt.rc_context(scaled):
-        return _steering_dots(spec, designs, target_order, arms)
-
-
-def _steering_dots(
-    spec: Metric,
-    designs: pd.DataFrame,
-    target_order: list[str],
-    arms: list[str],
-) -> plt.Figure:
-    figure, axis = plt.subplots(figsize=PANEL_SIZE_INCHES)
-    index = np.arange(len(target_order))
-    offsets = np.linspace(-DOT_OFFSET, DOT_OFFSET, len(arms))
-
-    for arm, offset in zip(arms, offsets, strict=True):
-        centres, lowers, uppers = [], [], []
-        for target in target_order:
-            values = designs.loc[
-                (designs["target"] == target) & (designs["arm"] == arm), spec.column
-            ]
-            centre, lower, upper = _median_and_quartiles(values)
-            centres.append(centre)
-            lowers.append(lower)
-            uppers.append(upper)
-        axis.errorbar(
-            index + offset,
-            centres,
-            yerr=np.vstack([lowers, uppers]),
-            fmt="none",
-            ecolor=ARM_COLORS[arm],
-            elinewidth=1.2,
-        )
-        axis.scatter(
-            index + offset,
-            centres,
-            s=DOT_SIZE_POINTS,
-            color=ARM_COLORS[arm],
-            edgecolor=apc.parchment.hex_code,
-            linewidth=0.8,
-            zorder=3,
-            label=ARM_LABELS[arm],
-        )
-
-    axis.set_xticks(index)
-    axis.set_xticklabels([TARGET_LABELS[target] for target in target_order])
-    axis.set_xlim(-0.6, len(target_order) - 0.4)
-    axis.set_ylabel(spec.axis_label)
-    axis.legend(
-        loc="lower left",
-        bbox_to_anchor=(0.0, 1.0),
-        ncol=2,
-        title=LEGEND_TITLE,
-        alignment="left",
-        frameon=False,
-        handlelength=0.8,
-        columnspacing=1.0,
-        handletextpad=0.3,
-    )
-    apc.mpl.style_plot(axis, categorical_axes="x")
-    figure.tight_layout()
-    return figure
-
-
-STRIP_DOT_SIZE_POINTS = 26
+STRIP_DOT_SIZE_POINTS = 104
 STRIP_JITTER_WIDTH = 0.16
 STRIP_MEDIAN_HALF_WIDTH = 0.28
+STRIP_MEDIAN_WIDTH = 3.2
 STRIP_JITTER_SEED = 0
 """Fixed so the jitter is identical every render; the offsets carry no meaning."""
 
@@ -485,24 +486,16 @@ def scan_strip(
 ) -> plt.Figure:
     """One dot per design, in a column per steering weight.
 
-    A dot per design rather than a median and an interval, because what
-    separates the two steering terms is the shape of the distribution and not
-    its centre. The capped barrier is bimodal: at the weight where it has moved
-    half of its designs, those designs sit at one end or the other and almost
-    none in between. The averaged term fills the middle at the comparable
-    weight. A median hides exactly that, and an interquartile bar drawn on a
-    bimodal sample describes a shape the sample does not have.
+    A dot per design rather than a median and an interval, because the shape of
+    a column is the result: at weight 1.0 the designs are spread across the
+    whole range rather than collected at either end, and an interquartile bar
+    drawn there describes a shape the sample does not have.
 
-    Panels are drawn on a fixed 0 to 1 axis and each repeats the unsteered arm,
-    so a column can be compared against one in the neighbouring panel and
-    neither panel has to be read through the other.
+    The axis is fixed to 0 through 1 and the unsteered arm is a column like any
+    other, so a column is read against its neighbours rather than against a
+    reference drawn somewhere else. Columns take the weight ramp, the same
+    greys the per-step panels give the same arms.
     """
-    if len(weight_arms) > len(WEIGHT_RAMP):
-        raise ValueError(
-            f"{len(weight_arms)} weights exceeds the {len(WEIGHT_RAMP)}-step ramp; "
-            "adding a step means revalidating the whole palette for contrast "
-            "and dichromat separation"
-        )
     spec = METRICS[metric]
     scaled = {key: plt.rcParams[key] * FONT_SCALE for key in FONT_SIZE_KEYS}
     with plt.rc_context(scaled):
@@ -521,10 +514,10 @@ def _scan_strip(
     generator = np.random.default_rng(STRIP_JITTER_SEED)
 
     arms = [baseline_arm, *weight_arms]
-    colours = [BASELINE_COLOR, *WEIGHT_RAMP[-len(weight_arms) :]]
     labels = ["Unsteered", *weight_labels]
 
-    for position, (arm, colour) in enumerate(zip(arms, colours, strict=True)):
+    for position, arm in enumerate(arms):
+        colour = ARM_COLORS[arm]
         values = designs.loc[
             (designs["target"] == target) & (designs["arm"] == arm), spec.column
         ].to_numpy()
@@ -546,7 +539,7 @@ def _scan_strip(
             [position - STRIP_MEDIAN_HALF_WIDTH, position + STRIP_MEDIAN_HALF_WIDTH],
             [median, median],
             color=ERROR_COLOR,
-            linewidth=2.0,
+            linewidth=STRIP_MEDIAN_WIDTH,
             solid_capstyle="round",
             zorder=4,
         )
@@ -555,38 +548,11 @@ def _scan_strip(
     axis.set_xticklabels(labels)
     axis.set_xlim(-0.6, len(arms) - 0.4)
     axis.set_ylim(0.0, 1.0)
-    axis.set_xlabel("steering weight (dimensionless)")
-    axis.set_ylabel(spec.column)
+    axis.set_xlabel(LEGEND_TITLE)
+    axis.set_ylabel(spec.design_label)
     apc.mpl.style_plot(axis, categorical_axes="x")
     figure.tight_layout()
     return figure
-
-
-LINE_LABEL_PAD = 0.12
-
-
-def _widest_gap_position(rows: list[list[float]]) -> int:
-    """The x position whose series values are furthest apart.
-
-    Direct labels are only legible where the lines they name are separated, and
-    which position that is depends on the quantity. Median helix fans out at
-    the lowest steering weight and converges on zero by the highest; interface
-    pTM does the reverse, with two targets within 0.003 of each other at low
-    weight and the spread only opening at high weight. Choosing the position by
-    hand suited one panel and silently hid a line on the other, so it is
-    measured: for each position, take the smallest gap between neighbouring
-    values, and keep the position where that smallest gap is largest.
-    """
-    best_position, best_gap = 0, -1.0
-    for position in range(len(rows[0])):
-        ordered = sorted(row[position] for row in rows)
-        gap = min(
-            (later - earlier for earlier, later in zip(ordered, ordered[1:], strict=False)),
-            default=0.0,
-        )
-        if gap > best_gap:
-            best_position, best_gap = position, gap
-    return best_position
 
 
 def scan_lines(
@@ -594,15 +560,14 @@ def scan_lines(
     target_order: list[str],
     arms: list[str],
     metric: str,
+    legend_loc: str,
 ) -> plt.Figure:
-    """Median of one quantity against steering weight, a labelled line per target.
+    """Median of one quantity against steering weight, a line per target.
 
-    Lines carry direct labels and the panel has no legend. Five series need
-    either five legend rows, which take 40% of the panel height, or one row
-    that does not fit the width; and giving five targets five hues fails on
-    colour difference, which is why targets are a categorical axis everywhere
-    else in this module. A single hue with the names written on the lines
-    avoids all three.
+    Targets carry a hue each and the panel carries a legend, which needs the
+    legend to sit where the lines are not. Helix falls to the floor and leaves
+    the top right of its panel empty; sheet rises and leaves the top left. The
+    corner is therefore an argument rather than a default.
 
     Weight is placed at equal spacing rather than in proportion, so the x axis
     is a sequence of conditions and not a numeric scale. Reading a slope off it
@@ -611,7 +576,7 @@ def scan_lines(
     spec = METRICS[metric]
     scaled = {key: plt.rcParams[key] * FONT_SCALE for key in FONT_SIZE_KEYS}
     with plt.rc_context(scaled):
-        return _scan_lines(spec, designs, target_order, arms)
+        return _scan_lines(spec, designs, target_order, arms, legend_loc)
 
 
 def _scan_lines(
@@ -619,6 +584,7 @@ def _scan_lines(
     designs: pd.DataFrame,
     target_order: list[str],
     arms: list[str],
+    legend_loc: str,
 ) -> plt.Figure:
     figure, axis = plt.subplots(figsize=PANEL_SIZE_INCHES)
     positions = np.arange(len(arms))
@@ -634,168 +600,673 @@ def _scan_lines(
         ]
         for target in target_order
     ]
-    label_position = _widest_gap_position(rows)
 
     for target, medians in zip(target_order, rows, strict=True):
         axis.plot(
             positions,
             medians,
-            color=apc.aegean.hex_code,
-            linewidth=TRACE_LINE_WIDTH,
+            color=TARGET_COLORS[target],
+            linewidth=SCAN_LINE_WIDTH,
             marker="o",
-            markersize=5,
+            markersize=SCAN_MARKER_SIZE,
             markeredgecolor=apc.parchment.hex_code,
             markeredgewidth=0.8,
+            label=TARGET_LABELS[target],
             zorder=3,
-        )
-        axis.text(
-            label_position + LINE_LABEL_PAD,
-            medians[label_position],
-            TARGET_LABELS[target],
-            color=ERROR_COLOR,
-            va="center",
-            ha="left",
-            fontsize=plt.rcParams["xtick.labelsize"],
-            bbox={
-                "facecolor": apc.parchment.hex_code,
-                "edgecolor": "none",
-                "boxstyle": "round,pad=0.15",
-            },
-            zorder=4,
         )
 
     axis.set_xticks(positions)
     axis.set_xticklabels([ARM_LABELS[arm] for arm in arms])
-    trailing = 0.95 if label_position == len(arms) - 1 else 0.3
-    axis.set_xlim(-0.3, len(arms) - 1 + trailing)
+    axis.set_xlim(-0.3, len(arms) - 1 + 0.3)
     axis.set_xlabel(LEGEND_TITLE)
     axis.set_ylabel(spec.axis_label)
+    apc.mpl.style_plot(axis, categorical_axes="x")
+    axis.legend(
+        loc=legend_loc,
+        ncol=1,
+        frameon=False,
+        handlelength=1.2,
+        handletextpad=0.5,
+        labelspacing=0.3,
+    )
+    figure.tight_layout()
+    return figure
+
+
+WIDE_SIZE_INCHES = (11.0, 7.4)
+"""Two stacked panels of twenty-five columns each.
+
+The width is capped rather than chosen. The theme scales a figure to its column
+only inside a layout cell; a single figure keeps the pixel width Quarto writes
+into the tag, which is half the rendered pixels, so at 150 dpi it is 75 CSS
+pixels per inch against a body column that stops at 850. Anything past 11.3
+inches leaves the page scrolling sideways at every viewport.
+"""
+
+BOX_ALPHA = 0.14
+BOX_LINE_WIDTH = 1.4
+BOX_NEUTRAL = apc.slate.hex_code
+"""How the confidence panels draw a box: a washed fill inside solid edges.
+
+The fill is pale enough that the dots read through it, since the dots are the
+data and the box is a summary of them.
+
+The box is drawn in slate wherever it sits over its own dots: one neutral
+grey, opaque on the edges and washed out behind them. A box summarises the
+same thirty points it sits behind, so giving it a hue as well says nothing the
+dots have not said. Slate rather than the cool greys of the house palette,
+because a blue cast on a grey box reads as a colour of its own.
+
+The fill carries its alpha in its own colour rather than on the patch, which
+would fade the edge with it.
+"""
+
+
+def _style_box(
+    drawn: dict[str, list], fill: str, edge: str, alpha: float, median_width: float
+) -> None:
+    """Recolour one drawn boxplot in place."""
+    for patch in drawn["boxes"]:
+        patch.set_facecolor(to_rgba(fill, alpha))
+        patch.set_edgecolor(edge)
+        patch.set_linewidth(BOX_LINE_WIDTH)
+    for part in ("whiskers", "caps"):
+        for line in drawn[part]:
+            line.set_color(edge)
+            line.set_linewidth(BOX_LINE_WIDTH)
+    for line in drawn["medians"]:
+        line.set_color(edge)
+        line.set_linewidth(median_width)
+        line.set_zorder(4)
+
+
+COST_MEDIAN_WIDTH = 3.0
+COST_DOT_SIZE_POINTS = 18
+COST_DOT_EDGE_WIDTH = 0.4
+COST_AXIS_PAD_FRACTION = 0.04
+COST_METRICS = ("iptm", "plddt")
+
+
+CONFIDENCE_PANEL_SIZE_INCHES = (5.0, 5.4)
+CONFIDENCE_BOX_WIDTH = 0.8
+CONFIDENCE_JITTER_WIDTH = 0.24
+CONFIDENCE_DOT_SIZE_POINTS = 26
+CONFIDENCE_FONT_SCALE = 1.3
+"""Type runs larger in these panels than elsewhere in the module.
+
+Five panels across a row are each a third of a page column, so type set for a
+half-column panel comes out small against the marks once the document has
+scaled the image down. The boxes are wide for the same reason: at unit spacing
+a 0.55 box leaves almost half the panel as gaps between columns, which is
+width the columns themselves can use.
+"""
+
+
+def confidence_limits(
+    designs: pd.DataFrame,
+    metric: str,
+    target_order: list[str],
+    arms: list[str],
+) -> tuple[float, float]:
+    """The y range one metric needs to hold every design in a set of panels.
+
+    Panels laid out by the document are separate figures, so a shared axis has
+    to be computed once and handed to each of them. The range is the data and a
+    small pad, not zero to one: nothing in these panels is read by length from
+    an origin, and the weights move the medians through a band that a
+    zero-anchored axis would squeeze into the top third.
+    """
+    spec = METRICS[metric]
+    wanted = designs["target"].isin(target_order) & designs["arm"].isin(arms)
+    values = designs.loc[wanted, spec.column]
+    if values.empty:
+        raise ValueError(f"no designs for {target_order} across {arms}")
+    pad = (values.max() - values.min()) * COST_AXIS_PAD_FRACTION
+    return float(values.min() - pad), float(values.max() + pad)
+
+
+def confidence_panel(
+    designs: pd.DataFrame,
+    metric: str,
+    target: str,
+    arms: list[str],
+    limits: tuple[float, float],
+) -> plt.Figure:
+    """One target's confidence against steering weight, every design drawn.
+
+    A median says how a typical run comes out and nothing about how the best
+    one does, and for a campaign that returns thirty designs and keeps the ones
+    clearing a bar those are different questions. Every design is a dot and the
+    box over them carries the quartiles, the median and whiskers at 1.5 times
+    the interquartile range, so a column answers both: the box for the rate,
+    the top of the dot column for the ceiling.
+
+    One target per figure, laid out beside the others by the document rather
+    than inside one canvas, so each panel is its own image at the document's
+    own width. That costs a shared axis, which ``confidence_limits`` restores
+    by measuring the whole set once; without it the panels would each scale to
+    their own target and stop being comparable. Which target a panel holds is
+    named by the document's own subcaption rather than drawn into the image.
+
+    A panel holds one target and the subcaption says which, so nothing in the
+    panel is coloured by target. What colour carries instead is the weight, on
+    the same grey ramp the per-step panels give the same arms, over a box in
+    the one neutral grey.
+    """
+    spec = METRICS[metric]
+    scaled = {key: plt.rcParams[key] * FONT_SCALE * CONFIDENCE_FONT_SCALE for key in FONT_SIZE_KEYS}
+    with plt.rc_context(scaled):
+        return _confidence_panel(spec, designs, target, arms, limits)
+
+
+def _confidence_panel(
+    spec: Metric,
+    designs: pd.DataFrame,
+    target: str,
+    arms: list[str],
+    limits: tuple[float, float],
+) -> plt.Figure:
+    figure, axis = plt.subplots(figsize=CONFIDENCE_PANEL_SIZE_INCHES)
+    generator = np.random.default_rng(STRIP_JITTER_SEED)
+
+    for position, arm in enumerate(arms):
+        values = designs.loc[
+            (designs["target"] == target) & (designs["arm"] == arm), spec.column
+        ].to_numpy()
+        if not len(values):
+            raise ValueError(f"no designs for {target} / {arm}")
+        _style_box(
+            axis.boxplot(
+                values,
+                positions=[position],
+                widths=CONFIDENCE_BOX_WIDTH,
+                patch_artist=True,
+                showfliers=False,
+                zorder=2,
+            ),
+            BOX_NEUTRAL,
+            BOX_NEUTRAL,
+            BOX_ALPHA,
+            COST_MEDIAN_WIDTH,
+        )
+        jitter = generator.uniform(-CONFIDENCE_JITTER_WIDTH, CONFIDENCE_JITTER_WIDTH, len(values))
+        axis.scatter(
+            position + jitter,
+            values,
+            s=CONFIDENCE_DOT_SIZE_POINTS,
+            color=ARM_COLORS[arm],
+            edgecolor=apc.parchment.hex_code,
+            linewidth=COST_DOT_EDGE_WIDTH,
+            zorder=3,
+        )
+
+    axis.set_xticks(np.arange(len(arms)))
+    axis.set_xticklabels([ARM_WEIGHT_LABELS[arm] for arm in arms])
+    axis.set_xlim(-0.6, len(arms) - 0.4)
+    axis.set_ylim(*limits)
+    axis.set_xlabel(LEGEND_TITLE)
+    axis.set_ylabel(spec.design_label)
     apc.mpl.style_plot(axis, categorical_axes="x")
     figure.tight_layout()
     return figure
 
 
-SCATTER_DOT_SIZE_POINTS = 14
-SCATTER_ALPHA = 0.6
+SCAN_BASELINE_COLOR = apc.cloud.hex_code
+SCAN_RAMP_SPAN = (0.0, 0.8)
+SCAN_NEVER_LABEL = "never"
+SCAN_SWITCH_MARKER_SIZE = 7
+SCAN_TIGHT_PAD = 0.3
+"""Outer padding these panels leave, against the 1.08 of a standalone figure.
+
+Four of them are composed into a grid by the document, so whatever each one
+leaves around its own content is added to the gap between them. The axis
+labels set the real margin; this only stops matplotlib adding more.
+"""
+
+SCAN_TRACE_CEILING = 0.83
+SCAN_COMPOSITION_CEILING = 0.9
+"""Where these panels stop, rather than at one.
+
+Both scans are half as wide as the panels they replaced, so the vertical room
+matters. The highest per-step median anywhere in either scan is 0.752 and the
+highest upper quartile of a finished composition is 0.856, so these ceilings
+crop only space nothing reaches.
+"""
+
+SCAN_LABEL_ROOM = 1.02
+"""How far past the last step the axis runs.
+
+Barely at all: the line labels sit outside the axes and the tight bounding box
+takes them in, which is what keeps the traces filling the width they are drawn
+on. Holding the labels inside the axes instead costs half the panel to empty
+space and leaves the lines looking stubby.
+"""
+SCAN_BAND_ALPHA = 0.18
+"""Where a scan over the step a weight switches takes its colours.
+
+The house ``wine`` gradient rather than the grey weight ramp, because what
+varies along these panels is a step and not a weight, and the two scans are
+read against each other. Sampled over the first four fifths of the gradient,
+six steps are separated by at least 9.0 over normal vision, simulated
+protanopia and simulated deuteranopia; the pale end of the gradient is left
+out because a line has to hold its own against the chart surface.
+
+The unsteered curve is cloud, a cool grey, which clears every step of that
+ramp by 9.5. Bark, the baseline colour everywhere else in this module, reaches
+only 5.6 against the middle of the ramp.
+"""
 
 
-def proxy_against_critic(paired: pd.DataFrame, arms: list[str]) -> plt.Figure:
-    """Each design's in-loop interface score against the score it is judged by.
+def _scan_ramp(count: int) -> list[str]:
+    """``count`` colours along the wine gradient, dark first."""
+    low, high = SCAN_RAMP_SPAN
+    gradient = apc.gradients.wine.to_mpl_cmap()
+    return [to_hex(gradient(position)).upper() for position in np.linspace(low, high, count)]
 
-    The optimizer is steered by a distogram proxy computed every step; the
-    design is reported with an interface pTM from the critics, which refold the
-    discretised sequence at higher sampling. Those are different quantities, and
-    the proxy is the one the gradient sees, so whether it ranks designs the way
-    the critics do is worth showing rather than assuming.
 
-    Both axes span 0 to 1 at equal aspect so the identity line lies at 45
-    degrees and the proxy's offset from the critics reads as distance from it
-    rather than as something to infer from two scales. Colour is the steering
-    weight, which is what says whether the proxy degrades as the term pushes
-    harder.
+def _scan_label(step: int, never: int) -> str:
+    return SCAN_NEVER_LABEL if step == never else str(step)
 
-    The legend sits inside the axes at lower right, under a title broken across
-    two lines. The critics score above the proxy on 76% of designs, so that
-    corner holds 9 of 750 points and is the only sparse one; the title has to
-    wrap because on one line it makes the key wide enough to reach back into
-    the cloud, and moving the key outside the axes instead leaves no room for
-    the axis labels once the panel is square.
+
+@dataclass(frozen=True)
+class SwitchNotation:
+    """How a scan over a switching step names its own lines.
+
+    Each line carries its condition at its right-hand end rather than a legend
+    entry, so the wording has to be short enough to sit in the margin of a
+    narrow panel and still say which condition it names. The two ends of a
+    scan are conditions rather than steps, so they are named rather than
+    numbered.
+    """
+
+    prefix: str
+    baseline: str
+    never: str
+
+
+ONSET_NOTATION = SwitchNotation(prefix="from", baseline="unsteered", never="unsteered")
+RELEASE_NOTATION = SwitchNotation(prefix="until", baseline="unsteered", never="always")
+
+
+def _switch_label(notation: SwitchNotation, step: int, baseline: int, never: int) -> str:
+    if step == never:
+        return notation.never
+    if step == baseline:
+        return notation.baseline
+    return f"{notation.prefix} {step}"
+
+
+def schedule_traces(
+    trace: pd.DataFrame,
+    scan: dict[int, str],
+    drawn: tuple[int, ...],
+    metric: str,
+    notation: SwitchNotation,
+    baseline: int,
+    never: int,
+) -> plt.Figure:
+    """Per-step median of one quantity, one line per switching step.
+
+    A dot on each line marks the step its weight switches, which is the whole
+    point of the panel: the lines share a trajectory until then and separate
+    after. ``drawn`` selects which steps of the scan to draw, because a scan
+    wide enough to find the transition is wider than a legible panel, and the
+    steps past the transition sit on top of one another.
+
+    Lines carry their condition at their own right-hand end instead of a
+    legend. A legend of seven conditions needs either seven rows, which take
+    most of a panel this narrow, or one row that does not fit its width, and
+    the lines are already separated at the end of the run, which is where the
+    labels go.
+
+    The ramp runs darkest for the arm that carried the most steering, which is
+    the step furthest from ``baseline`` in either scan: a weight that arrives
+    earliest acts for longest, and so does one withdrawn latest.
+
+    ``baseline`` is the step whose arm never applies the weight, drawn in the
+    baseline grey rather than on the ramp because it is the reference the rest
+    are read against. ``never`` is the step that falls outside the run, which
+    carries no marker because nothing switches inside the run and is labelled
+    as such. The two coincide for a scan over the step a weight arrives and sit
+    at opposite ends of one over the step it is withdrawn.
+    """
+    spec = TRACE_METRICS[metric]
+    missing = [step for step in drawn if step not in scan]
+    if missing:
+        raise KeyError(f"steps {missing} are not in the scan; it holds {sorted(scan)}")
+    scaled = {key: plt.rcParams[key] * FONT_SCALE for key in FONT_SIZE_KEYS}
+    with plt.rc_context(scaled):
+        return _schedule_traces(spec, trace, scan, drawn, notation, baseline, never)
+
+
+def _schedule_traces(
+    spec: TraceMetric,
+    trace: pd.DataFrame,
+    scan: dict[int, str],
+    drawn: tuple[int, ...],
+    notation: SwitchNotation,
+    baseline: int,
+    never: int,
+) -> plt.Figure:
+    figure, axis = plt.subplots(figsize=SCAN_TRACE_SIZE_INCHES)
+    on_ramp = [step for step in drawn if step != baseline]
+    by_strength = sorted(on_ramp, key=lambda step: -abs(step - baseline))
+    ramp = dict(zip(by_strength, _scan_ramp(len(by_strength)), strict=True))
+
+    endpoints: list[float] = []
+    colours: list[str] = []
+    for step in drawn:
+        subset = trace[trace["arm"] == scan[step]]
+        if subset.empty:
+            raise ValueError(f"no loss log for {scan[step]}")
+        median = subset.groupby("step (index)")[spec.column].median()
+        colour = SCAN_BASELINE_COLOR if step == baseline else ramp[step]
+        axis.plot(
+            median.index,
+            median.to_numpy(),
+            color=colour,
+            linewidth=TRACE_LINE_WIDTH,
+            zorder=3,
+        )
+        endpoints.append(float(median.to_numpy()[-1]))
+        colours.append(colour)
+        if step not in (baseline, never):
+            axis.plot(
+                [step],
+                [median.loc[step]],
+                marker="o",
+                markersize=SCAN_SWITCH_MARKER_SIZE,
+                color=colour,
+                markeredgecolor=apc.parchment.hex_code,
+                markeredgewidth=1.0,
+                zorder=4,
+            )
+
+    last_step = float(trace["step (index)"].max())
+    placed = _spread_labels(endpoints, LABEL_MIN_GAP_FRACTION, (0.0, SCAN_TRACE_CEILING))
+    for step, height, colour in zip(drawn, placed, colours, strict=True):
+        axis.text(
+            last_step * 1.03,
+            height,
+            _switch_label(notation, step, baseline, never),
+            color=colour,
+            va="center",
+            ha="left",
+            fontsize=plt.rcParams["xtick.labelsize"],
+        )
+
+    axis.set_xlim(0, last_step * SCAN_LABEL_ROOM)
+    axis.set_xticks([tick for tick in axis.get_xticks() if 0 <= tick <= last_step])
+    axis.set_ylim(0.0, SCAN_TRACE_CEILING)
+    axis.set_xlabel("Optimization step (index)")
+    axis.set_ylabel(f"Median {spec.axis_label}")
+    apc.mpl.style_plot(axis)
+    figure.tight_layout(pad=SCAN_TIGHT_PAD)
+    return figure
+
+
+def schedule_composition(
+    designs: pd.DataFrame,
+    scan: dict[int, str],
+    axis_label: str,
+    never: int,
+) -> plt.Figure:
+    """Final helix and sheet against the step the weight switches.
+
+    Steps are equally spaced rather than placed in proportion, because the
+    scan is dense where the design is still deciding and sparse afterwards,
+    and a proportional axis would spend nine tenths of its width on the part
+    where nothing changes. The axis is a sequence of conditions.
+
+    Loop is left out although the three states sum to one. What these panels
+    are for is the exchange between the two states the term acts on, and a
+    third line drawn from their complement adds no measurement.
     """
     scaled = {key: plt.rcParams[key] * FONT_SCALE for key in FONT_SIZE_KEYS}
     with plt.rc_context(scaled):
-        return _proxy_against_critic(paired, arms)
+        return _schedule_composition(designs, scan, axis_label, never)
 
 
-def _proxy_against_critic(paired: pd.DataFrame, arms: list[str]) -> plt.Figure:
-    figure, axis = plt.subplots(figsize=PANEL_SIZE_INCHES)
+def _schedule_composition(
+    designs: pd.DataFrame,
+    scan: dict[int, str],
+    axis_label: str,
+    never: int,
+) -> plt.Figure:
+    figure, axis = plt.subplots(figsize=SCAN_COMPOSITION_SIZE_INCHES)
+    steps = sorted(scan)
+    positions = np.arange(len(steps))
 
-    axis.plot(
-        [0.0, 1.0],
-        [0.0, 1.0],
-        color=ERROR_COLOR,
-        linewidth=1.0,
-        linestyle=(0, (4, 3)),
-        zorder=1,
-    )
-
-    for arm in arms:
-        subset = paired[paired["arm"] == arm]
-        axis.scatter(
-            subset["distogram iptm proxy (0-1)"],
-            subset["iptm (0-1)"],
-            s=SCATTER_DOT_SIZE_POINTS,
-            color=ARM_COLORS[arm],
-            edgecolor=apc.parchment.hex_code,
-            linewidth=0.3,
-            alpha=SCATTER_ALPHA,
-            label=ARM_LABELS[arm],
+    for state in ("helix", "sheet"):
+        spec = METRICS[state]
+        columns = []
+        for step in steps:
+            values = designs.loc[designs["arm"] == scan[step], spec.column]
+            if values.empty:
+                raise ValueError(f"no designs for {scan[step]}")
+            columns.append(values)
+        axis.fill_between(
+            positions,
+            [values.quantile(0.25) for values in columns],
+            [values.quantile(0.75) for values in columns],
+            color=STATES[state].colour,
+            alpha=SCAN_BAND_ALPHA,
+            linewidth=0,
+            zorder=2,
+        )
+        axis.plot(
+            positions,
+            [values.median() for values in columns],
+            color=STATES[state].colour,
+            linewidth=SCAN_LINE_WIDTH,
+            marker="o",
+            markersize=SCAN_MARKER_SIZE,
+            markeredgecolor=apc.parchment.hex_code,
+            markeredgewidth=0.8,
+            label=STATES[state].label,
             zorder=3,
         )
 
-    axis.set_xlim(0.0, 1.0)
-    axis.set_ylim(0.0, 1.0)
-    axis.set_aspect("equal")
-    axis.set_xlabel("final-step distogram interface pTM proxy (0-1)")
-    axis.set_ylabel("critic interface pTM (0-1)")
+    axis.set_xticks(positions)
+    axis.set_xticklabels([_scan_label(step, never) for step in steps], rotation=45, ha="center")
+    axis.set_xlim(-0.4, len(steps) - 0.6)
+    axis.set_ylim(0.0, SCAN_COMPOSITION_CEILING)
+    axis.set_xlabel(axis_label)
+    axis.set_ylabel("Final composition (0-1)")
+    apc.mpl.style_plot(axis, categorical_axes="x")
+    axis.tick_params(axis="x", which="major", length=plt.rcParams["xtick.major.size"])
     axis.legend(
-        loc="lower right",
-        ncol=1,
-        title="Steering weight\n(dimensionless)",
-        alignment="left",
+        loc="upper center",
+        bbox_to_anchor=SCAN_LEGEND_ANCHOR,
+        ncol=2,
         frameon=False,
-        handlelength=0.8,
-        handletextpad=0.3,
-        labelspacing=0.3,
+        handlelength=1.4,
+        handletextpad=0.5,
+        columnspacing=1.6,
     )
-    apc.mpl.style_plot(axis)
+    figure.tight_layout(pad=SCAN_TIGHT_PAD)
+    return figure
+
+
+SCHEDULE_BOX_WIDTH = 0.52
+SCHEDULE_MEDIAN_WIDTH = 2.8
+SCHEDULE_JITTER_WIDTH = 0.15
+"""A box over the dots rather than a bar up from the axis.
+
+The axis starts at its lowest design and the quantity of interest is the
+spread, so the box carries the quartiles and the whiskers reach 1.5 times the
+interquartile range. Outliers are not drawn on the box, because every design
+is already a dot.
+"""
+
+
+def schedule_confidence(
+    designs: pd.DataFrame,
+    scan: dict[int, str],
+    axis_label: str,
+    baseline: int,
+    never: int,
+) -> plt.Figure:
+    """Both confidence metrics against the step a weight switches, every design drawn.
+
+    Every design is a dot, and a box over them carries the quartiles, the median
+    and whiskers at 1.5 times the interquartile range. The axis starts at the
+    lowest design rather than at zero, since nothing here is read by length.
+
+    The boxes are the neutral grey of the other confidence panels. Every steered
+    column here carries the same weight, so the dots take that weight's step on
+    the ramp rather than a ramp of their own; the switching step is already the
+    x axis. The column whose weight never acts keeps the baseline colour, which
+    is the one thing colour is doing in this panel.
+    """
+    scaled = {key: plt.rcParams[key] * FONT_SCALE for key in FONT_SIZE_KEYS}
+    with plt.rc_context(scaled):
+        return _schedule_confidence(designs, scan, axis_label, baseline, never)
+
+
+def _schedule_confidence(
+    designs: pd.DataFrame,
+    scan: dict[int, str],
+    axis_label: str,
+    baseline: int,
+    never: int,
+) -> plt.Figure:
+    figure, axes = plt.subplots(len(COST_METRICS), 1, figsize=WIDE_SIZE_INCHES, sharex=True)
+    generator = np.random.default_rng(STRIP_JITTER_SEED)
+
+    steps = sorted(scan)
+    steered = scan[max(scan, key=lambda step: abs(step - baseline))]
+    colours = {
+        step: (BASELINE_COLOR if step == baseline else ARM_COLORS[steered]) for step in steps
+    }
+
+    for axis, key in zip(axes, COST_METRICS, strict=True):
+        spec = METRICS[key]
+        lowest, highest = np.inf, -np.inf
+        for position, step in enumerate(steps):
+            values = designs.loc[designs["arm"] == scan[step], spec.column].to_numpy()
+            if not len(values):
+                raise ValueError(f"no designs for {scan[step]}")
+            lowest, highest = min(lowest, values.min()), max(highest, values.max())
+            _style_box(
+                axis.boxplot(
+                    values,
+                    positions=[position],
+                    widths=SCHEDULE_BOX_WIDTH,
+                    patch_artist=True,
+                    showfliers=False,
+                    zorder=2,
+                ),
+                BOX_NEUTRAL,
+                BOX_NEUTRAL,
+                BOX_ALPHA,
+                SCHEDULE_MEDIAN_WIDTH,
+            )
+            jitter = generator.uniform(-SCHEDULE_JITTER_WIDTH, SCHEDULE_JITTER_WIDTH, len(values))
+            axis.scatter(
+                position + jitter,
+                values,
+                s=COST_DOT_SIZE_POINTS,
+                color=colours[step],
+                edgecolor=apc.parchment.hex_code,
+                linewidth=COST_DOT_EDGE_WIDTH,
+                zorder=3,
+            )
+        pad = (highest - lowest) * COST_AXIS_PAD_FRACTION
+        axis.set_ylim(lowest - pad, highest + pad)
+        axis.set_ylabel(spec.design_label)
+        apc.mpl.style_plot(axis, categorical_axes="x")
+
+    axes[-1].set_xticks(np.arange(len(steps)))
+    axes[-1].set_xticklabels([_scan_label(step, never) for step in steps])
+    axes[-1].set_xlim(-0.6, len(steps) - 0.4)
+    axes[-1].set_xlabel(axis_label)
+    axes[0].tick_params(labelbottom=False)
     figure.tight_layout()
     return figure
 
 
 STACK_EDGE_WIDTH = 0.8
 
+STACK_BAR_WIDTH = 0.7
+NATURAL_LABEL = "Natural\nproteins"
+STACK_TICK_SCALE = 0.72
+"""The reference column leads the weights at the same spacing as any of them.
 
-def composition_stack(designs: pd.DataFrame, target: str, seed: int, arms: list[str]) -> plt.Figure:
-    """One design's secondary-structure composition across the weight scan.
+Equal spacing costs the panel the room to spell "Unsteered", which at the
+figure's usual tick size is wider than the one unit between ticks. The x tick
+labels therefore run smaller here than in the panel beside this one, which is
+the cheaper of the two compromises: a reader reads the word, and the axis
+spacing stays honest about the six columns being six equal categories.
+"""
+"""Wider than the grouped bars of Question 1, which share a position between
+two bars; a stack has its position to itself."""
 
-    The dot and line panels reduce each arm to a median, and the per-seed trace
-    panels show that an arm is not one behaviour. This shows neither: it follows
-    a single seed, whose inversion is deterministic given the weight, so the
-    five bars are the same search run five times with one number changed. The
-    three states sum to the whole chain, so a stacked bar carries the whole
-    composition without a second axis, and what the panel is for is the
-    exchange between states rather than the level of any one of them.
+LEGEND_BELOW_AXES = (0.5, -0.36)
+"""Where a one-row legend sits, in axes fractions, clear of the x axis label.
+
+The legend is built after ``apc.mpl.style_plot`` rather than before it, so the
+house separator rule is not added. That rule is inserted into the first column
+of the legend alone, which over three columns underlines a third of the row.
+"""
+
+
+def composition_stack(
+    designs: pd.DataFrame, target: str, arms: list[str], natural: pd.DataFrame
+) -> plt.Figure:
+    """Seed-averaged secondary-structure composition across the weight scan.
+
+    The three states sum to the whole scored chain on every design, so their
+    means over a seed set sum to one as well and each bar is still a whole
+    chain. What the panel carries that a helix axis does not is the exchange
+    between states: the helix a weight removes has to be held by something, and
+    a stacked bar says by what, without a second axis.
+
+    The natural reference set is the same composition measured the same way, so
+    it stacks into a bar like an arm does and answers the question the panel
+    otherwise leaves open: what the weight is steering towards. It sits past a
+    gap because it is not a weight.
 
     States take the same three colours as the composition panels in Question 1,
     so a reader who has learned them once does not learn them again.
     """
     scaled = {key: plt.rcParams[key] * FONT_SCALE for key in FONT_SIZE_KEYS}
+    scaled["xtick.labelsize"] = scaled["xtick.labelsize"] * STACK_TICK_SCALE
     with plt.rc_context(scaled):
-        return _composition_stack(designs, target, seed, arms)
+        return _composition_stack(designs, target, arms, natural)
 
 
 def _composition_stack(
-    designs: pd.DataFrame, target: str, seed: int, arms: list[str]
+    designs: pd.DataFrame, target: str, arms: list[str], natural: pd.DataFrame
 ) -> plt.Figure:
     figure, axis = plt.subplots(figsize=PANEL_SIZE_INCHES)
     positions = np.arange(len(arms))
 
-    bottoms = np.zeros(len(arms))
+    rows = {arm: designs[(designs["target"] == target) & (designs["arm"] == arm)] for arm in arms}
+    counts = {arm: len(frame) for arm, frame in rows.items()}
+    if len(set(counts.values())) != 1 or min(counts.values()) == 0:
+        raise ValueError(
+            f"a mean per arm needs the same non-zero design count in every arm, "
+            f"and {target} has {counts}"
+        )
+
+    absent = [
+        state.natural_column for state in STATES.values() if state.natural_column not in natural
+    ]
+    if absent:
+        raise KeyError(f"the natural reference set is missing {absent}")
+    natural_position = -1.0
+
+    bottoms = np.zeros(len(arms) + 1)
     for state in STATES.values():
-        heights = []
-        for arm in arms:
-            row = designs[
-                (designs["target"] == target) & (designs["arm"] == arm) & (designs["seed"] == seed)
-            ]
-            if len(row) != 1:
-                raise ValueError(
-                    f"expected one design for {target} / {arm} / seed {seed}, got {len(row)}"
-                )
-            heights.append(float(row.iloc[0][state.design_column]))
+        heights = np.array(
+            [natural[state.natural_column].mean()]
+            + [rows[arm][state.design_column].mean() for arm in arms]
+        )
         axis.bar(
-            positions,
+            [natural_position, *positions],
             heights,
-            width=BAR_WIDTH,
+            width=STACK_BAR_WIDTH,
             bottom=bottoms,
             color=state.colour,
             edgecolor=apc.parchment.hex_code,
@@ -803,24 +1274,29 @@ def _composition_stack(
             label=state.label,
             zorder=3,
         )
-        bottoms += np.asarray(heights)
+        bottoms += heights
 
-    axis.set_xticks(positions)
-    axis.set_xticklabels([ARM_WEIGHT_LABELS[arm] for arm in arms])
-    axis.set_xlim(-0.6, len(arms) - 0.4)
+    axis.set_xticks([natural_position, *positions])
+    axis.set_xticklabels([NATURAL_LABEL, *(ARM_LABELS[arm] for arm in arms)])
+    left, right = natural_position - 0.6, len(arms) - 0.4
+    axis.set_xlim(left, right)
     axis.set_ylim(0.0, 1.0)
-    axis.set_xlabel(LEGEND_TITLE)
-    axis.set_ylabel("Chain in each state (fraction 0-1)")
+    axis.set_xlabel(
+        LEGEND_TITLE,
+        x=((len(arms) - 1) / 2 - left) / (right - left),
+        ha="center",
+    )
+    axis.set_ylabel("Mean chain in each state (0-1)")
+    apc.mpl.style_plot(axis, categorical_axes="x")
     axis.legend(
-        loc="lower left",
-        bbox_to_anchor=(0.0, 1.0),
-        ncol=2,
+        loc="upper center",
+        bbox_to_anchor=LEGEND_BELOW_AXES,
+        ncol=len(STATES),
         frameon=False,
         handlelength=0.8,
-        columnspacing=1.2,
         handletextpad=0.4,
+        columnspacing=1.6,
     )
-    apc.mpl.style_plot(axis, categorical_axes="x")
     figure.tight_layout()
     return figure
 
@@ -850,6 +1326,9 @@ TRACE_METRICS: dict[str, TraceMetric] = {
 
 SEED_LINE_WIDTH = 0.8
 SEED_LINE_ALPHA = 0.45
+SEED_LINE_COLOR = HELIX_COLOR
+"""The helix hue, because what these lines carry is the helix term rather than
+the weight that produced them; the arm is one condition and needs no colour."""
 
 
 def seed_traces(trace: pd.DataFrame, target: str, arm: str, metric: str) -> plt.Figure:
@@ -884,7 +1363,7 @@ def _seed_traces(spec: TraceMetric, trace: pd.DataFrame, target: str, arm: str) 
         axis.plot(
             ordered["step (index)"].to_numpy(),
             ordered[spec.column].to_numpy(),
-            color=apc.vital.hex_code,
+            color=SEED_LINE_COLOR,
             linewidth=SEED_LINE_WIDTH,
             alpha=SEED_LINE_ALPHA,
             zorder=2,
@@ -953,7 +1432,7 @@ def _trace_lines(spec: TraceMetric, trace: pd.DataFrame, arms: list[str]) -> plt
 
     last_step = float(trace["step (index)"].max())
     span = max(endpoints) - min(endpoints)
-    placed = _spread_labels(endpoints, span * LABEL_MIN_GAP_FRACTION)
+    placed = _spread_labels(endpoints, span * LABEL_MIN_GAP_FRACTION, axis.get_ylim())
     for arm, height in zip(arms, placed, strict=True):
         axis.text(
             last_step * 1.02,

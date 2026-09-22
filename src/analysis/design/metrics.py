@@ -39,9 +39,7 @@ def _is_antibody_sequence(binder_sequence: str) -> bool:
     from abnumber.common import _anarci_align
 
     sequence = binder_sequence.replace(MUTABLE_TOKEN, "A")
-    result = _anarci_align(
-        sequences=[sequence], scheme="chothia", allowed_species=None
-    )[0]
+    result = _anarci_align(sequences=[sequence], scheme="chothia", allowed_species=None)[0]
     if not result:
         return False
     valid_chain_types = {"H", "K", "L"}
@@ -53,13 +51,8 @@ def _cdr_indices(binder_sequence: str) -> list[int]:
     from abnumber import Chain
     from abnumber.common import _anarci_align
 
-    result = _anarci_align(
-        sequences=[binder_sequence], scheme="chothia", allowed_species=None
-    )[0]
-    chains = [
-        Chain("".join(result[i][0].values()), scheme="chothia")
-        for i in range(len(result))
-    ]
+    result = _anarci_align(sequences=[binder_sequence], scheme="chothia", allowed_species=None)[0]
+    chains = [Chain("".join(result[i][0].values()), scheme="chothia") for i in range(len(result))]
     if len(chains) == 2 and not chains[0].is_heavy_chain():
         chains.reverse()
     indices: list[int] = []

@@ -13,10 +13,7 @@ from analysis import rcsb
 
 
 def _terms(body: dict) -> dict[str, dict]:
-    return {
-        node["parameters"]["attribute"]: node["parameters"]
-        for node in body["query"]["nodes"]
-    }
+    return {node["parameters"]["attribute"]: node["parameters"] for node in body["query"]["nodes"]}
 
 
 def test_the_query_is_pinned_to_a_release_date() -> None:

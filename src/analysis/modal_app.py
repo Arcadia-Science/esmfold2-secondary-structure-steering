@@ -19,9 +19,9 @@ is a label, recorded in the returned metrics and never resolved to a path
 inside the container.
 
 ``MAX_CONTAINERS`` caps how many designs run at once and is read from
-``ESMFOLD2_SS_MAX_CONTAINERS``. The full grid is six targets by three arms by
-thirty seeds, so the cap is what decides whether that takes an hour or most of
-a day. Lower it if your Modal workspace has a smaller GPU quota than the
+``ESMFOLD2_SS_MAX_CONTAINERS``. The published grids come to well over a
+thousand designs, so the cap is what decides whether that takes hours or most
+of a day. Lower it if your Modal workspace has a smaller GPU quota than the
 concurrency you ask for here.
 
 ``get_base_image`` is verbatim from ``cookbook/tutorials/binder_design.py`` at

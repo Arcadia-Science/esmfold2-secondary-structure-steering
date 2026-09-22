@@ -32,28 +32,26 @@ import py3Dmol
 
 from analysis import steering
 
-CONTRIBUTING_COLOR = apc.tanzanite.hex_code
+CONTRIBUTING_COLOR = apc.cinnabar.hex_code
 ZERO_COLOR = apc.ghost.hex_code
 """What the scene encodes: what each residue contributes to the term.
 
-Not secondary structure. The publication's three state hues are deliberately
-absent here, because a residue's contribution is what the term reads and a
-state is not: colouring by state would present a classification the term never
-makes, and would invite the helix hue to be read as the reason a residue
-scores.
+Not secondary structure. The contributing colour is the publication's helix
+red, the hue of the quantity this term stands in for, but what the scene
+colours is still contribution: the term charges on an i to i+4 distance and
+makes no assignment, and a residue in a helix whose rung falls outside the
+cutoff takes the pale colour like any other.
 
 A residue contributes either one over the number of scored residues or exactly
-zero, with nothing in between, so these are a pair from one hue family
-separated by lightness rather than a ramp. The trailing residues have no i+4
-partner and take the same colour as a scored residue that contributes nothing,
-because the panel is about what reaches the sum and by that measure they are
-alike.
+zero, with nothing in between, so these are two colours rather than a ramp. The
+trailing residues have no i+4 partner and take the same colour as a scored
+residue that contributes nothing, because the panel is about what reaches the
+sum and by that measure they are alike.
 
-The two are separated by 55.2 under the worst of normal vision, protanopia and
-deuteranopia, and by at least 18.6 from every hue already carrying meaning
-elsewhere in the publication.
+The two are separated by 48.5 under the worst of normal vision, protanopia and
+deuteranopia.
 
-The pale one is a cool near-white, 2.0 from the background the viewer draws on.
+The pale one is a cool near-white, 1.9 from the background the viewer draws on.
 That is deliberate and is the one place in this publication where a colour is
 not readable against its surface on its own: the cartoon is lit and shadowed,
 so the ribbon reads as geometry rather than as fill, and a residue contributing
@@ -63,19 +61,20 @@ this colour would be invisible, so nothing is.
 ACCENT_COLOR = apc.charcoal.hex_code
 SURFACE_COLOR = "#FEF7F1"
 
-ENDPOINT_COLOR = "#F7B846"
-"""Canary, the same at both ends of a rung whether or not the rung counts.
+ENDPOINT_COLOR = apc.sky.hex_code
+"""A pale cyan, at both ends of a rung and along the rod between them, whether
+or not the rung counts.
 
 Taking the endpoint colour from the cartoon hid the endpoints, because a sphere
-sits on the very residue whose colour it was borrowing. Canary is the house
-colour that stays furthest from everything a sphere has to be read against
-here. Its smallest CAM02-UCS difference is 37.9 from the contact red,
-34.9 from the non-contact blue-grey, 53.1 from the charcoal rod it caps and 29.4
-from the white behind the binder's silhouette, each of those the worst case over
-normal vision and fully simulated deuteranopia, protanopia and tritanopia. It
-shares a hue family with the mustard the composition panels give to sheet, which
-costs nothing here: no sheet colour appears in this scene, and the spheres mark
-a measurement rather than a structural state.
+sits on the very residue whose colour it was borrowing. Sky is 41.5 from the
+contributing red, the worst case over normal vision, simulated protanopia and
+simulated deuteranopia, and it is only 5.9 from the near-white a residue
+contributing nothing wears. Flat colour difference is not what separates them
+there: the spheres are lit solids with a specular highlight against a matte
+ribbon, and a dark sphere, which measures far better, reads as a hole in the
+cartoon rather than as a marker on it. The rod takes the same colour rather
+than the house charcoal it used to, which sits 3.7 from the contributing red
+under simulated deuteranopia and would read as part of the ribbon it crosses.
 """
 
 BINDER_CHAIN = "B"
@@ -164,7 +163,7 @@ HOVER_TEMPLATE = """function(atom, viewer) {
   var mid = {x: (r.a[0] + r.b[0]) / 2, y: (r.a[1] + r.b[1]) / 2, z: (r.a[2] + r.b[2]) / 2};
   atom.__cyl = viewer.addCylinder({
     start: {x: r.a[0], y: r.a[1], z: r.a[2]}, end: {x: r.b[0], y: r.b[1], z: r.b[2]},
-    radius: __CYLINDER_RADIUS__, color: '__ACCENT__', dashed: true,
+    radius: __CYLINDER_RADIUS__, color: '__ENDPOINT_COLOR__', dashed: true,
     dashLength: __DASH_LENGTH__, gapLength: __GAP_LENGTH__, fromCap: 1, toCap: 1});
   atom.__s1 = viewer.addSphere({center: {x: r.a[0], y: r.a[1], z: r.a[2]},
     radius: __ENDPOINT_RADIUS__, color: '__ENDPOINT_COLOR__'});

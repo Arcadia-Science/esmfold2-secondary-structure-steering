@@ -23,9 +23,7 @@ from transformers.models.esmfold2.modeling_esmfold2_experimental import (
 _ESMC_CACHE: dict[str, torch.nn.Module] = {}
 
 
-def _load_hf_model(
-    critic_name: str, lm_dropout: float, cache_esmc: bool, device: str
-) -> Any:
+def _load_hf_model(critic_name: str, lm_dropout: float, cache_esmc: bool, device: str) -> Any:
     """Loads ESMFold2 from huggingface. Will cache ESMC by checkpoint ID among
     all non-scaling checkpoints, to save on VRAM and load time."""
     repo_id = f"biohub/{critic_name}"

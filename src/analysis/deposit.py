@@ -184,9 +184,17 @@ def design_members() -> list[Path]:
     Not the predicted structures. They are 82 MB across the grid and nothing
     in the notebook reads them, because composition is measured once at
     collection time and stored beside the campaign.
+
+    Only campaigns whose arm is still registered. Exploratory arms leave their
+    campaigns on disk when they stop being reported, and depositing those would
+    ship designs a reader cannot trace to anything in the notebook.
     """
+    from analysis.targets import ARM_SPECS
+
     members: list[Path] = []
     for campaign_dir in sorted(paths.CAMPAIGNS.glob("*__*")):
+        if campaign_dir.name.split("__", 1)[1] not in ARM_SPECS:
+            continue
         for name in (
             "composition.parquet",
             "all_results.parquet",

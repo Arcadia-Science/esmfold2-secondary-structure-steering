@@ -378,9 +378,7 @@ def test_compute_distogram_iptm_proxy_identical(upstream: ModuleType) -> None:
     logits, target_length, binder_length = _planted_distogram(batch=1)
     binder_sequence = "AGVLK"[:binder_length]
     mine = compute_distogram_iptm_proxy(logits, target_length, binder_sequence, False)
-    theirs = upstream.compute_distogram_iptm_proxy(
-        logits, target_length, binder_sequence, False
-    )
+    theirs = upstream.compute_distogram_iptm_proxy(logits, target_length, binder_sequence, False)
     assert sorted(mine) == sorted(theirs)
     assert mine["distogram_iptm_proxy"] == theirs["distogram_iptm_proxy"]
     assert np.isnan(mine["cdr_distogram_iptm_proxy"])
@@ -491,9 +489,9 @@ def test_to_atom_array_identical(upstream: ModuleType) -> None:
     assert np.array_equal(mine.coord, theirs.coord)
     assert set(mine.get_annotation_categories()) == set(theirs.get_annotation_categories())
     for category in mine.get_annotation_categories():
-        assert np.array_equal(
-            mine.get_annotation(category), theirs.get_annotation(category)
-        ), category
+        assert np.array_equal(mine.get_annotation(category), theirs.get_annotation(category)), (
+            category
+        )
     assert mine.array_length() == 5
 
 
@@ -557,9 +555,7 @@ def test_compute_distogram_iptm_proxy_cdr_identical(upstream: ModuleType) -> Non
     generator = torch.Generator().manual_seed(31)
     logits = torch.randn(1, total, total, 128, generator=generator)
     mine = compute_distogram_iptm_proxy(logits, target_length, binder_sequence, True)
-    theirs = upstream.compute_distogram_iptm_proxy(
-        logits, target_length, binder_sequence, True
-    )
+    theirs = upstream.compute_distogram_iptm_proxy(logits, target_length, binder_sequence, True)
     assert mine == theirs
 
 
@@ -568,9 +564,7 @@ def test_prepare_esmfold2_tensors_identical(upstream: ModuleType) -> None:
     from analysis.design.folding import prepare_esmfold2_tensors
     from esm.models.esmfold2 import ProteinInput, StructurePredictionInput
 
-    request = StructurePredictionInput(
-        sequences=[ProteinInput(id="0", sequence=TARGET, msa=None)]
-    )
+    request = StructurePredictionInput(sequences=[ProteinInput(id="0", sequence=TARGET, msa=None)])
     mine = prepare_esmfold2_tensors(request, seed=0)
     theirs = upstream.prepare_esmfold2_tensors(request, seed=0)
     assert sorted(mine) == sorted(theirs)

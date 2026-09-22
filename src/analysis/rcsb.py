@@ -292,9 +292,7 @@ def parse_entity(pdb_id: str, entity: dict[str, object]) -> EntityMeta:
         pdb_id=pdb_id,
         auth_chain=auth_chains[0],
         n_instances=len(auth_chains),
-        sample_length_residues=int(
-            entity["entity_poly"]["rcsb_sample_sequence_length"]
-        ),
+        sample_length_residues=int(entity["entity_poly"]["rcsb_sample_sequence_length"]),
         description=str(entity["rcsb_polymer_entity"]["pdbx_description"] or ""),
         organism=str(organism.get("ncbi_scientific_name") or ""),
         taxonomy_id=int(organism.get("ncbi_taxonomy_id") or -1),
@@ -307,9 +305,7 @@ def fetch_entries(pdb_ids: list[str], progress: bool = True) -> dict[str, EntryM
     entries: dict[str, EntryMeta] = {}
     for start in range(0, len(pdb_ids), GRAPHQL_BATCH):
         ids = pdb_ids[start : start + GRAPHQL_BATCH]
-        payload = post_json(
-            GRAPHQL_URL, {"query": GRAPHQL_TEMPLATE, "variables": {"ids": ids}}
-        )
+        payload = post_json(GRAPHQL_URL, {"query": GRAPHQL_TEMPLATE, "variables": {"ids": ids}})
         for entry in payload["data"]["entries"]:
             pdb_id = str(entry["rcsb_id"])
             info = entry["rcsb_entry_info"]
@@ -319,12 +315,8 @@ def fetch_entries(pdb_ids: list[str], progress: bool = True) -> dict[str, EntryM
                 title=str(entry["struct"]["title"] or ""),
                 resolution_angstrom=float(resolutions[0]),
                 deposit_date=str(entry["rcsb_accession_info"]["deposit_date"] or ""),
-                release_date=str(
-                    entry["rcsb_accession_info"]["initial_release_date"] or ""
-                ),
-                deposited_instances=int(
-                    info["deposited_polymer_entity_instance_count"]
-                ),
+                release_date=str(entry["rcsb_accession_info"]["initial_release_date"] or ""),
+                deposited_instances=int(info["deposited_polymer_entity_instance_count"]),
                 entities=tuple(
                     parse_entity(pdb_id, entity) for entity in entry["polymer_entities"]
                 ),
@@ -391,15 +383,11 @@ def _protein(cif_path: Path) -> struc.AtomArray:
     return array[struc.filter_amino_acids(array)]
 
 
-def interface(
-    protein: struc.AtomArray, binder_chain: str, target_chain: str
-) -> tuple[int, float]:
+def interface(protein: struc.AtomArray, binder_chain: str, target_chain: str) -> tuple[int, float]:
     """Heavy-atom contacts within the cutoff, and buried surface area."""
     binder = protein[protein.chain_id == binder_chain]
     target = protein[protein.chain_id == target_chain]
-    distances = np.linalg.norm(
-        binder.coord[:, None, :] - target.coord[None, :, :], axis=-1
-    )
+    distances = np.linalg.norm(binder.coord[:, None, :] - target.coord[None, :, :], axis=-1)
     contacts = int((distances < CONTACT_CUTOFF_ANGSTROM).sum())
     sasa_binder = np.nansum(struc.sasa(binder, point_number=SASA_POINT_NUMBER))
     sasa_target = np.nansum(struc.sasa(target, point_number=SASA_POINT_NUMBER))
@@ -434,9 +422,7 @@ def measure_entry(
                 )
             key = frozenset({binder.auth_chain, target.auth_chain})
             if key not in interfaces:
-                interfaces[key] = interface(
-                    protein, binder.auth_chain, target.auth_chain
-                )
+                interfaces[key] = interface(protein, binder.auth_chain, target.auth_chain)
             contacts, bsa = interfaces[key]
         except Exception as error:  # noqa: BLE001
             result.failures[binder.entity_id] = str(error)
@@ -603,9 +589,7 @@ def build(limit: int = 0, progress: bool = True) -> pd.DataFrame:
     to_measure = pairs[pairs["cluster_representative"] == 1]
     if progress:
         print(f"downloading {to_measure['pdb_id'].nunique()} mmCIF files...")
-    found, download_failures = download_all(
-        sorted(set(to_measure["pdb_id"])), progress=progress
-    )
+    found, download_failures = download_all(sorted(set(to_measure["pdb_id"])), progress=progress)
 
     if progress:
         print(f"measuring {len(found)} entries...")
@@ -613,9 +597,7 @@ def build(limit: int = 0, progress: bool = True) -> pd.DataFrame:
     failures: dict[str, str] = {
         f"{pdb_id}_download": error for pdb_id, error in download_failures.items()
     }
-    for index, (pdb_id, group) in enumerate(
-        to_measure.groupby("pdb_id", sort=True), start=1
-    ):
+    for index, (pdb_id, group) in enumerate(to_measure.groupby("pdb_id", sort=True), start=1):
         if pdb_id not in found:
             continue
         by_id = {entity.entity_id: entity for entity in entries[pdb_id].entities}
@@ -668,9 +650,7 @@ def build(limit: int = 0, progress: bool = True) -> pd.DataFrame:
         "cluster_representatives": int((pairs["cluster_representative"] == 1).sum()),
         "measured": int((pairs["measured"] == 1).sum()),
         "excluded_design_like": int(
-            (
-                (pairs["cluster_representative"] == 1) & (pairs["binder_design_like"] == 1)
-            ).sum()
+            ((pairs["cluster_representative"] == 1) & (pairs["binder_design_like"] == 1)).sum()
         ),
         "excluded_short_or_long": int(
             ((pairs["measured"] == 1) & (pairs["excluded_short_or_long"] == 1)).sum()

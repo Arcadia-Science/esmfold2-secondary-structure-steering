@@ -83,14 +83,14 @@ def viable(frame: pd.DataFrame) -> pd.Series:
     The rule is a conjunction on purpose. Steering that drives helix down while
     destroying the interface is not a result, so fold composition and
     confidence have to be read together rather than traded off by eye. The
-    confidence half is ESMFold2 scoring its own output, which is the limitation
-    Question 3 exists to probe; nothing here treats it as ground truth.
+    confidence half is ESMFold2 scoring its own output, which is a limitation
+    rather than ground truth: a low score can mean a worse design or a scorer
+    less confident about the fold class the design landed in.
     """
     absent = [column for column in VIABILITY_COLUMNS if column not in frame.columns]
     if absent:
         raise KeyError(
-            f"cannot judge viability without {absent}; the frame has "
-            f"{sorted(frame.columns)}"
+            f"cannot judge viability without {absent}; the frame has {sorted(frame.columns)}"
         )
     return (
         frame["helix (fraction 0-1)"].lt(MAX_HELIX_FRACTION)
@@ -129,24 +129,12 @@ def load(target_key: str, arm: str) -> pd.DataFrame:
 
 def load_all(target_keys: list[str], arms: list[str]) -> pd.DataFrame:
     """Every available composition table concatenated, skipping absent ones."""
-    frames = [
-        load(key, name)
-        for key in target_keys
-        for name in arms
-        if is_available(key, name)
-    ]
+    frames = [load(key, name) for key in target_keys for name in arms if is_available(key, name)]
     if not frames:
-        raise FileNotFoundError(
-            f"No campaign composition tables under {paths.CAMPAIGNS}."
-        )
+        raise FileNotFoundError(f"No campaign composition tables under {paths.CAMPAIGNS}.")
     return pd.concat(frames, ignore_index=True)
 
 
 def available(target_keys: list[str], arms: list[str]) -> list[tuple[str, str]]:
     """Which (target, arm) pairs have a composition table."""
-    return [
-        (key, name)
-        for key in target_keys
-        for name in arms
-        if is_available(key, name)
-    ]
+    return [(key, name) for key in target_keys for name in arms if is_available(key, name)]

@@ -36,9 +36,7 @@ def _folding_trunk_to_lm_aa_vocab_matrix(device: torch.device) -> torch.Tensor:
 
 
 def _one_hot_from_probs(probs: torch.Tensor) -> torch.Tensor:
-    return F.one_hot(torch.argmax(probs, dim=-1), num_classes=probs.size(-1)).to(
-        probs.dtype
-    )
+    return F.one_hot(torch.argmax(probs, dim=-1), num_classes=probs.size(-1)).to(probs.dtype)
 
 
 def _straight_through(discrete: torch.Tensor, continuous: torch.Tensor) -> torch.Tensor:
@@ -90,16 +88,12 @@ def compute_esmc_pseudoperplexity_nll(
         position_indices = score_mask[batch_idx].nonzero(as_tuple=False).flatten()
         num_positions = int(position_indices.numel())
         if num_positions == 0:
-            raise ValueError(
-                "ESMC pseudoperplexity score mask selected zero positions."
-            )
+            raise ValueError("ESMC pseudoperplexity score mask selected zero positions.")
 
         num_masked = max(1, math.ceil(ESMC_MASK_FRACTION * num_positions))
         random_scores = torch.rand((n_passes, num_positions), device=device)
         masked_offsets = random_scores.topk(num_masked, dim=-1, largest=False).indices
-        pass_masks = torch.zeros(
-            (n_passes, binder_design.size(1)), dtype=torch.bool, device=device
-        )
+        pass_masks = torch.zeros((n_passes, binder_design.size(1)), dtype=torch.bool, device=device)
         pass_masks[
             torch.arange(n_passes, device=device)[:, None],
             position_indices[masked_offsets],
@@ -134,9 +128,7 @@ def compute_esmc_pseudoperplexity_nll(
         stop = start + n_passes
         target_weights = target_esm[batch_idx]
         log_probs = logits[start:stop].log_softmax(dim=-1)[:, 1:-1, 4:24]
-        nlls = -(log_probs * target_weights.to(log_probs.dtype).unsqueeze(0)).sum(
-            dim=-1
-        )
+        nlls = -(log_probs * target_weights.to(log_probs.dtype).unsqueeze(0)).sum(dim=-1)
         losses.append(nlls[pass_masks].mean())
 
     return torch.stack(losses, dim=0)
