@@ -18,10 +18,8 @@ from pathlib import Path
 
 import pandas as pd
 
-from analysis import paths
+from analysis import deposit, paths
 from analysis.targets import ARM_SPECS, TARGET_SPECS
-
-DEPOSIT_URL = "https://doi.org/10.5281/zenodo.PENDING"
 
 
 @dataclass(frozen=True)
@@ -31,7 +29,6 @@ class CampaignStatus:
     target_key: str
     arm: str
     has_results: bool
-    has_summary: bool
     has_manifest: bool
     has_complexes: bool
     has_trace: bool
@@ -39,8 +36,8 @@ class CampaignStatus:
 
     @property
     def is_analysable(self) -> bool:
-        """True when the per-design table is present, which is all figures need."""
-        return self.has_results
+        """Whether model scores and coordinates are available for measurement."""
+        return self.has_results and self.has_complexes
 
     @property
     def is_spawned(self) -> bool:
@@ -56,7 +53,6 @@ def status(target_key: str, arm: str) -> CampaignStatus:
         target_key=target_key,
         arm=arm,
         has_results=paths.campaign_results(target_key, arm).is_file(),
-        has_summary=paths.campaign_summary(target_key, arm).is_file(),
         has_manifest=paths.campaign_manifest(target_key, arm).is_file(),
         has_complexes=n > 0,
         has_trace=paths.campaign_trace(target_key, arm).is_file(),
@@ -84,7 +80,6 @@ def status_table(
                     "target": key,
                     "arm": name,
                     "results present (bool)": s.has_results,
-                    "summary present (bool)": s.has_summary,
                     "manifest present (bool)": s.has_manifest,
                     "predicted complexes (count)": s.n_complexes,
                     "loss log present (bool)": s.has_trace,
@@ -112,15 +107,7 @@ def load_campaign(target_key: str, arm: str) -> pd.DataFrame:
     """
     results = paths.campaign_results(target_key, arm)
     if not results.is_file():
-        raise FileNotFoundError(
-            f"No results for target {target_key!r} arm {arm!r}.\n"
-            f"Expected: {results}\n"
-            f"Fetch the deposited artifacts from {DEPOSIT_URL}, or regenerate "
-            f"this campaign on your own Modal account with:\n"
-            f"    python -m analysis.campaign run --target {target_key} --arm {arm}\n"
-            f"Regenerating costs GPU time and will not reproduce these exact "
-            f"designs, because the design loop is not seed-reproducible."
-        )
+        deposit.DESIGN_TABLES.fetch()
     frame = pd.read_parquet(results)
     return frame.assign(target=target_key, arm=arm)
 
@@ -146,7 +133,7 @@ def load_all(
     if not frames:
         raise FileNotFoundError(
             f"No campaign results found under {paths.CAMPAIGNS}.\n"
-            f"Fetch the deposited artifacts from {DEPOSIT_URL}."
+            "Supply the preserved model inputs; see analysis.deposit for archive availability."
         )
     return pd.concat(frames, ignore_index=True)
 

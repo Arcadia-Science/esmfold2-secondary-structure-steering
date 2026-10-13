@@ -10,7 +10,6 @@ in.
 """
 
 from __future__ import annotations
-from pathlib import Path
 
 import pandas as pd
 import pytest
@@ -86,17 +85,6 @@ def test_the_vanilla_schedule_is_exactly_what_broke_it() -> None:
     assert campaign._empty_container_paths(unrouted) == ["schedule.waypoints[0].weights"]
 
 
-def test_force_rerun_reads_the_documented_variable(monkeypatch) -> None:
-    from analysis import deposit
-
-    monkeypatch.delenv(deposit.FORCE_RERUN_ENV, raising=False)
-    assert deposit.force_rerun() is False
-    monkeypatch.setenv(deposit.FORCE_RERUN_ENV, "1")
-    assert deposit.force_rerun() is True
-    monkeypatch.setenv(deposit.FORCE_RERUN_ENV, "true")
-    assert deposit.force_rerun() is False, "only the literal 1 should arm a destructive path"
-
-
 def test_the_archive_is_its_own_marker(tmp_path) -> None:
     """A half-finished download must not look like a complete one."""
     from analysis import deposit
@@ -126,48 +114,98 @@ def test_packaging_round_trips_through_extraction(tmp_path) -> None:
         assert sorted(archive.namelist()) == ["nested/table.parquet", "top.json"]
 
 
-def _generated_tree(tmp_path, monkeypatch) -> tuple[Path, Path]:
-    from analysis import deposit, paths
+@pytest.mark.parametrize(
+    ("key", "identifiers"), [("seed", [0, 1, 2]), ("run", ["input00", "input01", "controls"])]
+)
+def test_submission_resumes_after_interruption_without_duplicate_calls(tmp_path, key, identifiers):
+    from types import SimpleNamespace
 
-    reference, campaigns = tmp_path / "reference", tmp_path / "campaigns"
-    for directory in (reference, campaigns):
-        directory.mkdir()
-        (directory / ".gitkeep").touch()
-    (reference / deposit.REFERENCE_ARCHIVE).write_bytes(b"archive")
-    (reference / "natural_binder_composition.csv").write_text("derived")
-    (campaigns / deposit.DESIGN_ARCHIVE).write_bytes(b"archive")
-    (campaigns / "egfr_d3__vanilla").mkdir()
+    path = tmp_path / "manifest.csv"
+    jobs = [{key: value} for value in identifiers]
+    submitted = []
 
-    monkeypatch.setattr(paths, "REFERENCE", reference)
-    monkeypatch.setattr(paths, "CAMPAIGNS", campaigns)
-    return reference, campaigns
+    def interrupted(job):
+        if job[key] == identifiers[1]:
+            raise ConnectionError("submission interrupted")
+        submitted.append(job[key])
+        return SimpleNamespace(object_id=f"call-{job[key]}")
 
+    with pytest.raises(ConnectionError):
+        campaign.submit_jobs(path, jobs, key=key, submit=interrupted)
+    assert campaign.read_manifest(path, key=key)[key].tolist() == identifiers[:1]
 
-def test_clear_generated_refuses_while_the_deposit_is_unminted(tmp_path, monkeypatch) -> None:
-    """The tables on disk are the only copies until a record exists to restore from."""
-    from analysis import deposit
+    def resume(job):
+        submitted.append(job[key])
+        return SimpleNamespace(object_id=f"call-{job[key]}")
 
-    reference, campaigns = _generated_tree(tmp_path, monkeypatch)
-    monkeypatch.setattr(deposit, "ZENODO_RECORD", "PENDING")
-
-    with pytest.raises(RuntimeError, match=deposit.ZENODO_RECORD_NAME):
-        deposit.clear_generated()
-
-    assert (reference / "natural_binder_composition.csv").is_file()
-    assert (campaigns / "egfr_d3__vanilla").is_dir()
+    frame = campaign.submit_jobs(path, jobs, key=key, submit=resume)
+    campaign.submit_jobs(path, jobs, key=key, submit=resume)
+    assert submitted == identifiers
+    assert frame[key].tolist() == identifiers
+    with pytest.raises(ValueError, match="match the existing manifest"):
+        campaign.submit_jobs(path, jobs[1:], key=key, submit=resume)
 
 
-def test_clear_generated_spares_the_archives(tmp_path, monkeypatch) -> None:
-    """FORCE_RERUN skips the fetch, so deleting a download would be gratuitous."""
-    from analysis import deposit
+def test_main_campaign_uses_incremental_submission_and_keeps_existing_calls(tmp_path, monkeypatch):
+    from types import SimpleNamespace
 
-    reference, campaigns = _generated_tree(tmp_path, monkeypatch)
-    monkeypatch.setattr(deposit, "ZENODO_RECORD", "17000000")
-    removed = deposit.clear_generated()
+    import modal
+    from analysis import paths
 
-    assert (reference / deposit.REFERENCE_ARCHIVE).is_file()
-    assert (campaigns / deposit.DESIGN_ARCHIVE).is_file()
-    assert (reference / ".gitkeep").is_file()
-    assert not (reference / "natural_binder_composition.csv").exists()
-    assert not (campaigns / "egfr_d3__vanilla").exists()
-    assert len(removed) == 2
+    monkeypatch.setattr(paths, "CAMPAIGNS", tmp_path)
+    calls = []
+
+    def submit(**kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(object_id=f"call-{kwargs['seed']}")
+
+    remote = SimpleNamespace(design=SimpleNamespace(spawn=submit))
+    monkeypatch.setattr(modal.Cls, "from_name", lambda *args: lambda: remote)
+    first = campaign.spawn_campaign("pdl1_igv", "vanilla", n_seeds=2)
+    again = campaign.spawn_campaign("pdl1_igv", "vanilla", n_seeds=2)
+    pd.testing.assert_frame_equal(first, again)
+    assert [call["seed"] for call in calls] == [0, 1]
+    assert all(call["arm"] == "vanilla" and call["target_sequence"] for call in calls)
+    with pytest.raises(ValueError, match="settings differ"):
+        campaign.spawn_campaign("pdl1_igv", "vanilla", n_seeds=3)
+
+
+def test_collection_reads_historical_manifest_and_preserves_failed_jobs(tmp_path, monkeypatch):
+    import io
+    import json
+    import zipfile
+    from types import SimpleNamespace
+
+    import modal
+
+    directory = tmp_path / "short"
+    directory.mkdir()
+    legacy = {name: {"call_id": name} for name in ["runs/pair00", "runs/pair01", "runs/pair02"]}
+    manifest = directory / "calls.json"
+    manifest.write_text(json.dumps(legacy))
+    before = manifest.read_bytes()
+    content = io.BytesIO()
+    with zipfile.ZipFile(content, "w") as archive:
+        archive.writestr("helix/model.pdb", "preserved model output")
+    polled = []
+
+    def from_id(call_id):
+        def get(timeout):
+            polled.append(call_id)
+            if call_id == "runs/pair01":
+                raise TimeoutError()
+            if call_id == "runs/pair02":
+                raise RuntimeError("GPU failed")
+            return content.getvalue()
+
+        return SimpleNamespace(get=get)
+
+    monkeypatch.setattr(modal.FunctionCall, "from_id", from_id)
+    campaign.collect_initialization(tmp_path, "short", 1)
+    assert (directory / "runs/pair00/helix/model.pdb").read_text() == "preserved model output"
+    assert not (directory / "runs/pair01/collected.json").exists()
+    assert not (directory / "runs/pair02/collected.json").exists()
+    campaign.collect_initialization(tmp_path, "short", 1)
+    assert polled.count("runs/pair00") == 1
+    assert manifest.read_bytes() == before
+    assert not (directory / "manifest.csv").exists()

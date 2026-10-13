@@ -10,12 +10,11 @@ Layout:
 - :mod:`analysis.schedule` holds the per-step weight schedules that turn a term
   into an arm.
 - :mod:`analysis.loss_trace` reads and writes the per-step loss logs.
-- :mod:`analysis.deposit` fetches the deposited inputs, and holds the one
-  switch that regenerates them from source instead.
+- :mod:`analysis.deposit` archives preserved inputs and fetches them when available.
 - :mod:`analysis.confidence` splits ESMFold2's per-residue pLDDT by chain, so
   binder confidence can be read separately from the complex it sits in.
 - :mod:`analysis.artifacts` is the file-exists gate the notebook reads through.
-- :mod:`analysis.composition` holds the per-design composition tables.
+- :mod:`analysis.composition` measures campaign structures during execution.
 - :mod:`analysis.reference` loads the natural binder baseline, fetching it
   from the deposit when absent.
 - :mod:`analysis.secondary_structure` measures composition, one way everywhere.

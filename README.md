@@ -1,34 +1,96 @@
-# Notebook Publication Template
+# Steering secondary structure in ESMFold2 binder design
 
-This repo is a template for Jupyter notebook publications. The template produces a publication rendered and hosted by Quarto, which can be viewed at [this demo URL](https://arcadia-science.github.io/notebook-pub-template/).
+This repository contains the publication notebook, analysis code, target inputs,
+and GPU experiment runners for secondary-structure steering in ESMFold2 binder design.
 
-## Template Documentation
+## Reproduce the analysis
 
-All the learning resources for this template can be found in `developer-docs/`.
+Create the environment from `env.yml`, activate it, install this package with
+`pip install -e .`, and run `make execute`. See the [setup guide](pages/SETUP.qmd)
+for installation instructions. Input requirements are listed below.
 
-- [Quickstart Guide](developer-docs/QUICKSTART.md) - **The most efficient way to get started** is to follow this guide (the rest can wait)
-- [Environment Setup Guide](developer-docs/ENVIRONMENT_SETUP.md) - How to set up your development environment
-- [Publishing Guide](developer-docs/PUBLISHING_GUIDE.md) - How to publish your notebook publication
-- [Template Architecture](developer-docs/TEMPLATE_ARCHITECTURE.md) - Understanding the template's structure
+GPU outputs have not yet been publicly archived. Until they are available,
+execution requires the original local model outputs. Missing inputs produce an
+error; executing the publication never submits GPU jobs. Rerunning GPU generation
+produces new samples and does not reproduce the exact reported designs.
 
----
+Analysis recalculates secondary structure, reference selection, amino-acid priors,
+and summaries from preserved inputs. Model data and exploratory work remain outside
+source control. Executed notebooks and `_freeze/` results are retained as required
+by the publication template, so publishing does not rerun the analysis.
 
-**NOTE: When ready to publish, fill in the information below, then delete this line and everything above it.**
+## Code and inputs
 
-# [PUB-TITLE]
+- `src/analysis`: shared analysis and generation code; experimental settings are in
+  `analysis.targets`.
+- `data/targets`: tracked target sequences and experimental coordinates.
+- `data/campaigns`: ignored campaign structures, model scores, traces and protocols.
+- `data/reference`: ignored frozen search results, entry metadata and RCSB coordinates.
+- `data/initialization`: ignored original initialization runs, including protocols,
+  exact input tensors, model outputs and execution provenance.
 
-This code repository contains or points to all materials required for creating and hosting the publication entitled, *"[PUB-TITLE]"*.
+## Generate model outputs
 
-The publication is hosted at [this URL](https://arcadia-science.github.io/[REPO-NAME]/).
+Use the project environment and a configured Modal account with access to the
+ESMFold2/ESMC models. Deploy the single shared app:
 
-## Data Description
+```bash
+modal deploy -m analysis.modal_app
+```
 
-[DESCRIPTION OF THE DATA]
+Unsteered, steered, and onset/release campaigns share the target and arm registry:
 
-## Reproduce
+```bash
+python -m analysis.campaign spawn --target pdl1_igv --arm vanilla
+python -m analysis.campaign collect --target pdl1_igv --arm vanilla
+```
 
-Please see [SETUP.qmd](pages/SETUP.qmd).
+Initialization experiments use the same campaign CLI and deployment. They first
+prepare matched inputs. `softness` performs fixed-input forwards, `short` runs
+40-update matched helix/sheet trajectories, and `full` runs 150-update designs:
 
-## Contribute
+```bash
+python -m analysis.campaign prepare --experiment short
+python -m analysis.campaign spawn --experiment short
+python -m analysis.campaign collect --experiment short
 
-Please see [CONTRIBUTING.qmd](pages/CONTRIBUTING.qmd).
+python -m analysis.campaign prepare --experiment full --temperature 1
+python -m analysis.campaign spawn --experiment full --temperature 1
+python -m analysis.campaign collect --experiment full --temperature 1
+```
+
+Use `--experiment softness` for the zero-update screen. Its preparation runs a
+Modal CPU function; other preparation is local. Full runs require the preserved
+unsteered campaign's initial hard sequences. Collect every T=1 run before
+preparing T=2 or T=4: those conditions reuse the exact T=1 atom-feature tensors.
+Pass `--temperature 2` or `--temperature 4` to each of the three commands.
+
+To preserve the reported runs, use a new absolute `--root` for each fresh
+initialization study and pass it consistently to prepare, spawn, and collect.
+Preparation refuses to overwrite an existing protocol. New jobs use the shared
+`manifest.csv` format; collection also reads historical `calls.json` manifests.
+Existing data directories and model files are retained without migration.
+
+The standard design worker handles loss-steered designs and prior-initialized
+trajectories. The fixed-input screen uses a separate worker class within the same
+app because it needs one uncompiled model. Experimental settings remain in
+`analysis.targets`; deployment and model loading remain in `analysis.modal_app`.
+
+Package preserved inputs locally, without uploading, using:
+
+```bash
+python -m analysis.campaign package --experiment campaigns
+python -m analysis.campaign package --experiment initialization
+python -m analysis.campaign package --experiment reference
+```
+
+Reference measurements and amino acid priors use up to four spawned CPU processes
+by default. From a notebook, use `reference.composition(workers=1)` or
+`priors.from_reference(natural, workers=1)` for serial execution. Worker functions
+are importable modules, so notebook cells need no multiprocessing entry-point
+guard. Ordinary scripts must call them inside `if __name__ == "__main__":`.
+`python -m analysis.campaign prior` prints freshly calculated priors without
+saving a measurement cache.
+
+See the [publishing guide](developer-docs/PUBLISHING_GUIDE.md) for the template's
+tagged-version build and publication process.

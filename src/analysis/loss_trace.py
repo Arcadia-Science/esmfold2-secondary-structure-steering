@@ -44,6 +44,8 @@ AGGREGATE_LOSS_UNITS: dict[str, str] = {
     "glob_loss": "dimensionless",
     "plm_loss": "nats/residue",
     "structure_loss": "dimensionless",
+    "base_structure_loss": "dimensionless",
+    "base_structure_weight": "dimensionless",
     "steering_loss": "dimensionless",
     "total_loss": "dimensionless",
 }

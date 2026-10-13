@@ -197,6 +197,13 @@ data/derived/*
 data/reference/*
 !data/reference/.gitkeep
 
+# Local exploratory work and scientific planning notes.
+/data/exploratory/
+/data/initialization/
+/exploratory/
+/scientific-direction.md
+/structural-analysis-plan.md
+
 # Jupyter real-time-collaboration state, written by the server when a client
 # opens a notebook. Local session bookkeeping, not a project artifact.
 .jupyter/

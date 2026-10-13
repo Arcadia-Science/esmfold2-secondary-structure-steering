@@ -1,38 +1,13 @@
-"""Fetching the deposited inputs, and the one switch that regenerates them.
+"""Preserve and distribute scientific inputs separately from source and measurements.
 
-Two kinds of input sit behind this module, and the notebook treats them the
-same way: look for what is already on disk, fetch it if it is missing, and
-regenerate it only when told to.
-
-- The natural binder reference archive holds the frozen RCSB search results and
-  the gzipped structures. The notebook still runs the analysis over them, so
-  the measurement code is exercised on every fresh clone rather than only when
-  someone goes looking for it. Freezing the search results is also what makes
-  the set stable: the RCSB recomputes its sequence-identity clusters as the PDB
-  grows, so a live query drifts while a recorded one does not.
-- The design campaign archive holds the per-design tables. Those cannot be
-  regenerated cheaply, because designing needs GPUs and the loop is not
-  seed-reproducible, so a rerun produces different designs rather than the same
-  ones.
-
-Downloads try S3 first and fall back to Zenodo, because Zenodo can be slow.
-Neither needs an account: the S3 reads are unsigned.
-
-Following the pattern in `Arcadia-Science/2025-phylogenetic-analysis-of-msa-pairformer`,
-the downloaded archive is kept after extraction rather than deleted. It is the
-marker that says this data was fetched rather than computed, and because it is
-written only after the extraction succeeds, an interrupted download leaves no
-marker and the next run fetches again.
-
-``FORCE_RERUN=1`` is the other path. It deletes everything derivable, skips the
-fetch, and regenerates from source: the RCSB query goes to the live API and the
-campaigns go to Modal. That needs a Modal account and costs real GPU time, so
-:func:`require_modal` runs before anything is deleted.
+The reference archive contains frozen search results, entry metadata and CIFs.
+Campaign archives contain model structures, scores, traces and protocols.
+Initialization archives preserve original runs, including exact tensors and audits.
+Existing local inputs are used directly. Missing inputs can be fetched once the
+study archive is published; importing or executing analysis never launches a GPU.
 """
 
 from __future__ import annotations
-import os
-import shutil
 import urllib.request
 import zipfile
 from dataclasses import dataclass
@@ -42,24 +17,10 @@ from analysis import paths
 
 PUBLIC_S3_BUCKET = "2026-esmfold2-secondary-structure-steering"
 ZENODO_RECORD = "PENDING"
-ZENODO_RECORD_NAME = "ZENODO_RECORD"
-"""The name of the constant above, for error messages that ask it to be set.
-
-FIXME: remove this, the guard in ``clear_generated`` and this comment once the
-Zenodo record is minted and ``ZENODO_RECORD`` holds its identifier. The guard
-exists only because there is nowhere to restore from.
-"""
 ZENODO_BASE_URL = f"https://zenodo.org/records/{ZENODO_RECORD}/files"
-
-FORCE_RERUN_ENV = "FORCE_RERUN"
 
 REFERENCE_ARCHIVE = "natural-binder-inputs.zip"
 DESIGN_ARCHIVE = "design-campaigns.zip"
-
-
-def force_rerun() -> bool:
-    """Whether the caller asked for everything to be regenerated from source."""
-    return os.environ.get(FORCE_RERUN_ENV, "") == "1"
 
 
 def _download_from_s3(key: str, destination: Path) -> bool:
@@ -105,7 +66,16 @@ class DataArtifact:
         succeeds, so a half-finished download never looks like a complete one.
         """
         if self.is_fetched():
+            with zipfile.ZipFile(self.archive_path) as archive:
+                archive.extractall(self.extract_dir)
             return self.archive_path
+        if ZENODO_RECORD == "PENDING":
+            raise FileNotFoundError(
+                f"Missing local inputs for {self.description}: {self.extract_dir}. "
+                "The study's GPU data have not been published yet. "
+                f"Supply the original run outputs or an archive at {self.archive_path}; "
+                "analysis will not launch GPU work."
+            )
         self.extract_dir.mkdir(parents=True, exist_ok=True)
         partial = self.archive_path.with_suffix(".partial")
         print(f"fetching {self.description} ({self.filename})...", flush=True)
@@ -120,8 +90,7 @@ class DataArtifact:
                     f"{PUBLIC_S3_BUCKET} or Zenodo record {ZENODO_RECORD}.\n"
                     f"  cause: {error}\n"
                     f"If the deposit is not minted yet, the archive has to be "
-                    f"placed at {self.archive_path} by hand, or regenerated "
-                    f"with {FORCE_RERUN_ENV}=1 and a Modal account."
+                    f"placed at {self.archive_path} by hand."
                 ) from error
         with zipfile.ZipFile(partial) as archive:
             archive.extractall(self.extract_dir)
@@ -136,8 +105,12 @@ class DataArtifact:
         reproduces the layout the notebook expects. Already-compressed members
         are stored rather than deflated, which is most of what goes in here.
         """
+        missing = [p for p in members if not p.is_file()]
+        if missing:
+            raise FileNotFoundError(f"Missing archive inputs: {missing[:5]}")
         self.extract_dir.mkdir(parents=True, exist_ok=True)
-        with zipfile.ZipFile(self.archive_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        partial = self.archive_path.with_suffix(".partial")
+        with zipfile.ZipFile(partial, "w", compression=zipfile.ZIP_DEFLATED) as archive:
             for member in members:
                 compression = (
                     zipfile.ZIP_STORED
@@ -149,6 +122,7 @@ class DataArtifact:
                     arcname=str(member.relative_to(self.extract_dir)),
                     compress_type=compression,
                 )
+        partial.replace(self.archive_path)
         return self.archive_path
 
 
@@ -160,8 +134,73 @@ REFERENCE_INPUTS = DataArtifact(
 DESIGN_TABLES = DataArtifact(
     filename=DESIGN_ARCHIVE,
     extract_dir=paths.CAMPAIGNS,
-    description="the per-design campaign tables",
+    description="campaign structures, model scores, traces, and protocols",
 )
+
+INITIALIZATION_INPUTS = DataArtifact(
+    filename="initialization-inputs.zip",
+    extract_dir=paths.INITIALIZATION,
+    description="initialization structures, model scores, and optimization traces",
+)
+
+
+def initialization_members(root: Path | None = None) -> list[Path]:
+    """Archive original run outputs and provenance without a publication copy."""
+    from analysis.targets import INITIALIZATION_SPECS
+
+    root = paths.INITIALIZATION if root is None else root
+    experiments = ["softness", "short"] + [
+        f"full-T{t}" for t in INITIALIZATION_SPECS["full"]["temperatures"]
+    ]
+    members = []
+    for name in experiments:
+        directory = root / name
+        protocol = directory / "protocol.json"
+        if not protocol.is_file():
+            raise FileNotFoundError(f"Missing original run protocol: {protocol}")
+        # These directories contain collected runs, never reports or pilot copies.
+        members.append(protocol)
+        for filename in ("inputs.json", "calls.json", "manifest.json", "manifest.csv"):
+            if (directory / filename).is_file():
+                members.append(directory / filename)
+        run_dirs = (
+            sorted(directory.glob("input[0-9][0-9]"))
+            if name == "softness"
+            else sorted((directory / "runs").glob("pair[0-9][0-9]"))
+            if name == "short"
+            else sorted(directory.glob("seed[0-9][0-9]"))
+        )
+        expected = INITIALIZATION_SPECS["full" if name.startswith("full-") else name][
+            "n_seeds" if name.startswith("full-") else "pairs" if name == "short" else "inputs"
+        ]
+        if len(run_dirs) != expected:
+            raise ValueError(f"Expected {expected} collected runs in {directory}")
+        for run in run_dirs:
+            for filename in ("initialization.pt", "audit.json"):
+                if not (run / filename).is_file():
+                    raise FileNotFoundError(
+                        f"Missing original input or provenance: {run / filename}"
+                    )
+        for folder in [directory / "inputs", directory / "source", *run_dirs]:
+            members.extend(
+                p
+                for p in folder.rglob("*")
+                if p.is_file()
+                and (
+                    p.suffix in {".pdb", ".pt", ".npz", ".py"}
+                    or p.name
+                    in {
+                        "audit.json",
+                        "protocol.json",
+                        "critics.json",
+                        "complete.json",
+                        "step_trace.csv",
+                        "readouts.csv",
+                    }
+                    or (name == "softness" and "_drop" in p.name and p.suffix == ".json")
+                )
+            )
+    return sorted(set(members))
 
 
 def reference_members() -> list[Path]:
@@ -171,109 +210,44 @@ def reference_members() -> list[Path]:
     derives from these, and depositing it too would let a reader load a result
     without ever running the measurement that produced it.
     """
-    from analysis import rcsb
+    from analysis import rcsb, reference
 
-    members = [paths.reference_table(rcsb.SEARCH_HITS)]
-    members.extend(sorted(rcsb.CIF_CACHE.glob("*.cif.gz")))
-    return [member for member in members if member.is_file()]
-
-
-def design_members() -> list[Path]:
-    """What the design archive holds: the per-campaign tables.
-
-    Not the predicted structures. They are 82 MB across the grid and nothing
-    in the notebook reads them, because composition is measured once at
-    collection time and stored beside the campaign.
-
-    Only campaigns whose arm is still registered. Exploratory arms leave their
-    campaigns on disk when they stop being reported, and depositing those would
-    ship designs a reader cannot trace to anything in the notebook.
-    """
-    from analysis.targets import ARM_SPECS
-
-    members: list[Path] = []
-    for campaign_dir in sorted(paths.CAMPAIGNS.glob("*__*")):
-        if campaign_dir.name.split("__", 1)[1] not in ARM_SPECS:
-            continue
+    members = [
+        paths.reference_table(name)
         for name in (
-            "composition.parquet",
-            "all_results.parquet",
-            "step_trace.parquet",
-            "protocol.json",
-            "summary.json",
-        ):
-            member = campaign_dir / name
-            if member.is_file():
-                members.append(member)
+            rcsb.SEARCH_HITS,
+            rcsb.ENTRY_METADATA,
+            reference.QUERY_RECORD,
+            "natural_binder_query_all_hits.json",
+        )
+    ]
+    members.extend(sorted(rcsb.CIF_CACHE.glob("*.cif.gz")))
+    missing = [p for p in members if not p.is_file()]
+    if missing:
+        raise FileNotFoundError(f"Missing reference inputs: {missing}")
     return members
 
 
-def require_modal() -> None:
-    """Raise unless Modal could actually regenerate the designs.
+def design_members() -> list[Path]:
+    """Preserve the published campaigns' model outputs, never derived measurements."""
+    from analysis.targets import N_SEEDS, publication_campaigns
 
-    Called before anything is deleted. Deleting first and discovering the
-    credentials are missing afterwards would leave no data and no way to make
-    it, which is the one genuinely unrecoverable ordering here.
-    """
-    try:
-        import modal.config
-    except ImportError as error:
-        raise RuntimeError(
-            f"{FORCE_RERUN_ENV}=1 regenerates the design campaigns on Modal, "
-            f"which is not installed. Install it with\n"
-            f"    pip install -r requirements-campaign.txt\n"
-            f"or unset {FORCE_RERUN_ENV} to use the deposited data."
-        ) from error
-
-    config = modal.config.config
-    if not (config.get("token_id") and config.get("token_secret")):
-        raise RuntimeError(
-            f"{FORCE_RERUN_ENV}=1 regenerates the design campaigns on Modal, "
-            f"but no Modal token is configured. Run\n"
-            f"    modal token new\n"
-            f"then deploy the app with\n"
-            f"    modal deploy src/analysis/modal_app.py\n"
-            f"or unset {FORCE_RERUN_ENV} to use the deposited data."
+    members = []
+    for target, arm in publication_campaigns():
+        directory = paths.campaign_dir(target, arm)
+        required = [
+            directory / name
+            for name in (
+                "all_results.parquet",
+                "step_trace.parquet",
+                "protocol.json",
+            )
+        ]
+        required.extend(
+            paths.campaign_complexes(target, arm) / f"seed{seed:02d}.pdb" for seed in range(N_SEEDS)
         )
-
-
-def clear_generated() -> list[Path]:
-    """Delete everything the notebook can regenerate, and say what went.
-
-    Leaves the archives alone if they happen to be present; ``fetch`` is
-    skipped under ``FORCE_RERUN`` anyway, and deleting a download nobody asked
-    to replace would be gratuitous.
-
-    Refuses to run while the deposit is unminted. What this deletes is
-    regenerable in principle, but only from Modal at the cost of a full grid,
-    and the archives it spares are whatever was packaged last rather than a
-    copy of what is on disk now. With no record to restore from, a clear is
-    not reversible.
-    """
-    if ZENODO_RECORD == "PENDING":
-        raise RuntimeError(
-            f"refusing to delete generated data while {ZENODO_RECORD_NAME} is "
-            f"{ZENODO_RECORD!r}. The campaign tables and reference set on disk "
-            f"are the only copies: the deposit does not exist yet, and the "
-            f"archives in {paths.CAMPAIGNS} and {paths.REFERENCE} are only as "
-            f"current as the last call to package(). Mint the deposit, or "
-            f"package and move the archives aside by hand, before clearing."
-        )
-    removed: list[Path] = []
-    for path in sorted(paths.REFERENCE.glob("*")):
-        if path.name in (".gitkeep", REFERENCE_ARCHIVE):
-            continue
-        if path.is_dir():
-            shutil.rmtree(path)
-        else:
-            path.unlink()
-        removed.append(path)
-    for path in sorted(paths.CAMPAIGNS.glob("*")):
-        if path.name in (".gitkeep", DESIGN_ARCHIVE):
-            continue
-        if path.is_dir():
-            shutil.rmtree(path)
-        else:
-            path.unlink()
-        removed.append(path)
-    return removed
+        missing = [p for p in required if not p.is_file()]
+        if missing:
+            raise FileNotFoundError(f"Incomplete campaign inputs: {missing[:5]}")
+        members.extend(required)
+    return members

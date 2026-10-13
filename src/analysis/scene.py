@@ -106,6 +106,13 @@ The body sets the width; height has no equivalent to track, and a percentage
 height inside an auto-height block collapses to nothing.
 """
 
+ZOOM_DISTANCE_LIMITS = (25, 250)
+"""Camera-distance bounds in Å: allow close inspection but keep the binder visible.
+
+3Dmol takes distances here, not magnification factors. The upper limit prevents
+scrolling from shrinking the structure indefinitely.
+"""
+
 LABEL_MARGIN = 10
 """Inset of the pinned measurement from the top left corner, in screen pixels."""
 
@@ -173,9 +180,9 @@ HOVER_TEMPLATE = """function(atom, viewer) {
     pad('i') + '= ' + atom.resi,
     pad('i + 4') + '= ' + r.j,
     pad('Distance') + '= ' + r.d.toFixed(2) + ' ' + ANGSTROM,
-    pad('Counts') + '= ' + (near ? 'yes  (< __CUTOFF__ ' + ANGSTROM + ')'
+    pad('Contributes') + '= ' + (near ? 'yes  (< __CUTOFF__ ' + ANGSTROM + ')'
                                  : 'no  (>= __CUTOFF__ ' + ANGSTROM + ')'),
-    pad('Adds') + '= ' + (near ? r.c.toFixed(4) : '0.0000')
+    pad('Loss') + '= ' + (near ? r.c.toFixed(4) : '0.0000')
   ]);
   viewer.render();
 }"""
@@ -303,5 +310,6 @@ def loss_term_scene(path: Path) -> py3Dmol.view:
     view.setHoverDuration(HOVER_DURATION_MS)
     view.center({"chain": BINDER_CHAIN})
     view.zoomTo({"chain": BINDER_CHAIN})
+    view.setZoomLimits(*ZOOM_DISTANCE_LIMITS)
     view.resize()
     return view

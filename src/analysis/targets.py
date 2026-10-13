@@ -162,7 +162,6 @@ class ArmSpec:
     key: str
     label: str
     schedule: LossSchedule
-    note: str
 
 
 ARM_SPECS: dict[str, ArmSpec] = {
@@ -170,311 +169,116 @@ ARM_SPECS: dict[str, ArmSpec] = {
         key="vanilla",
         label="Vanilla",
         schedule=schedule.VANILLA,
-        note=(
-            "The cookbook objective untouched. Every steering term registered "
-            "when the campaign ran is still measured and logged, which is how "
-            "the reference curve for a steered arm is built. Terms added to "
-            "the registry afterwards are absent rather than zero: these "
-            "campaigns predate helix_mean and carry no column for it, so a "
-            "per-step panel of that term shows the steered arms diverging from "
-            "their shared step-zero value instead of from an unsteered curve."
-        ),
     ),
     "helix_mean_w05": ArmSpec(
         key="helix_mean_w05",
         label="Mean helix rung fraction at 0.5",
         schedule=schedule.constant("helix_mean_w05", "helix_mean", 0.5),
-        note=(
-            "The averaged term at the higher of the two weights the capped "
-            "barrier was run at, again matched so that pooling is the only "
-            "difference."
-        ),
     ),
     "helix_mean_w10": ArmSpec(
         key="helix_mean_w10",
         label="Mean helix rung fraction at 1.0",
         schedule=schedule.constant("helix_mean_w10", "helix_mean", 1.0),
-        note=(
-            "Fills the gap below the first rung that worked. On PD-L1 the "
-            "averaged term left a median helix fraction of 0.779 at weight 0.5 "
-            "and 0.017 at 2.0, so the whole transition falls between them and "
-            "neither bound locates it."
-        ),
     ),
     "helix_mean_w20": ArmSpec(
         key="helix_mean_w20",
         label="Mean helix rung fraction at 2.0",
         schedule=schedule.constant("helix_mean_w20", "helix_mean", 2.0),
-        note=(
-            "The averaged term at a weight chosen to match the capped "
-            "barrier's integrated push rather than its nominal weight. Where "
-            "the barrier still has a gradient it is 2 to 11 times the averaged "
-            "term's, and it carried that gradient on 58% of steps at weight 0.2 "
-            "and 95% at 0.5, so a matched weight is several times higher. This "
-            "arm brackets the two matched-weight arms so that a weak result "
-            "there can be read as a weight rather than as the pooling."
-        ),
     ),
     "helix_mean_w20_from50": ArmSpec(
         key="helix_mean_w20_from50",
         label="Mean helix rung fraction at 2.0 from step 50",
         schedule=schedule.delayed("helix_mean_w20_from50", "helix_mean", 2.0, 50),
-        note=(
-            "The same weight as helix_mean_w20, withheld until step 50. Its "
-            "first fifty steps are the unsteered objective and are identical "
-            "to the unsteered arm on the same seed, so the arm asks whether a "
-            "design the unsteered run has already carried into the alpha-rich "
-            "basin can still be steered out of it, or whether the weight only "
-            "works on a sequence that has not yet committed. Outside the grid: "
-            "one target, one seed, run as a diagnostic."
-        ),
     ),
     "helix_mean_w20_until1": ArmSpec(
         key="helix_mean_w20_until1",
         label="Mean helix rung fraction at 2.0 until step 1",
         schedule=schedule.released("helix_mean_w20_until1", "helix_mean", 2.0, 1),
-        note=(
-            "One release in the scan that holds the weight at 2.0 from step 0 "
-            "and moves only the step it is withdrawn. The delayed arms show "
-            "the fold committing inside the first few steps; these ask whether "
-            "the commitment the weight makes in those same steps is equally "
-            "durable once the weight is gone. Released at step 0 is the "
-            "unsteered arm and never released is helix_mean_w20, so both ends "
-            "of this scan are campaigns that already exist. Outside the grid: "
-            "one target, run as a diagnostic."
-        ),
     ),
     "helix_mean_w20_until2": ArmSpec(
         key="helix_mean_w20_until2",
         label="Mean helix rung fraction at 2.0 until step 2",
         schedule=schedule.released("helix_mean_w20_until2", "helix_mean", 2.0, 2),
-        note=(
-            "One release in the scan that holds the weight at 2.0 from step 0 "
-            "and moves only the step it is withdrawn. The delayed arms show "
-            "the fold committing inside the first few steps; these ask whether "
-            "the commitment the weight makes in those same steps is equally "
-            "durable once the weight is gone. Released at step 0 is the "
-            "unsteered arm and never released is helix_mean_w20, so both ends "
-            "of this scan are campaigns that already exist. Outside the grid: "
-            "one target, run as a diagnostic."
-        ),
     ),
     "helix_mean_w20_until4": ArmSpec(
         key="helix_mean_w20_until4",
         label="Mean helix rung fraction at 2.0 until step 4",
         schedule=schedule.released("helix_mean_w20_until4", "helix_mean", 2.0, 4),
-        note=(
-            "One release in the scan that holds the weight at 2.0 from step 0 "
-            "and moves only the step it is withdrawn. The delayed arms show "
-            "the fold committing inside the first few steps; these ask whether "
-            "the commitment the weight makes in those same steps is equally "
-            "durable once the weight is gone. Released at step 0 is the "
-            "unsteered arm and never released is helix_mean_w20, so both ends "
-            "of this scan are campaigns that already exist. Outside the grid: "
-            "one target, run as a diagnostic."
-        ),
     ),
     "helix_mean_w20_until7": ArmSpec(
         key="helix_mean_w20_until7",
         label="Mean helix rung fraction at 2.0 until step 7",
         schedule=schedule.released("helix_mean_w20_until7", "helix_mean", 2.0, 7),
-        note=(
-            "One release in the scan that holds the weight at 2.0 from step 0 "
-            "and moves only the step it is withdrawn. The delayed arms show "
-            "the fold committing inside the first few steps; these ask whether "
-            "the commitment the weight makes in those same steps is equally "
-            "durable once the weight is gone. Released at step 0 is the "
-            "unsteered arm and never released is helix_mean_w20, so both ends "
-            "of this scan are campaigns that already exist. Outside the grid: "
-            "one target, run as a diagnostic."
-        ),
     ),
     "helix_mean_w20_until10": ArmSpec(
         key="helix_mean_w20_until10",
         label="Mean helix rung fraction at 2.0 until step 10",
         schedule=schedule.released("helix_mean_w20_until10", "helix_mean", 2.0, 10),
-        note=(
-            "One release in the scan that holds the weight at 2.0 from step 0 "
-            "and moves only the step it is withdrawn. The delayed arms show "
-            "the fold committing inside the first few steps; these ask whether "
-            "the commitment the weight makes in those same steps is equally "
-            "durable once the weight is gone. Released at step 0 is the "
-            "unsteered arm and never released is helix_mean_w20, so both ends "
-            "of this scan are campaigns that already exist. Outside the grid: "
-            "one target, run as a diagnostic."
-        ),
     ),
     "helix_mean_w20_until20": ArmSpec(
         key="helix_mean_w20_until20",
         label="Mean helix rung fraction at 2.0 until step 20",
         schedule=schedule.released("helix_mean_w20_until20", "helix_mean", 2.0, 20),
-        note=(
-            "One release in the scan that holds the weight at 2.0 from step 0 "
-            "and moves only the step it is withdrawn. The delayed arms show "
-            "the fold committing inside the first few steps; these ask whether "
-            "the commitment the weight makes in those same steps is equally "
-            "durable once the weight is gone. Released at step 0 is the "
-            "unsteered arm and never released is helix_mean_w20, so both ends "
-            "of this scan are campaigns that already exist. Outside the grid: "
-            "one target, run as a diagnostic."
-        ),
     ),
     "helix_mean_w20_until30": ArmSpec(
         key="helix_mean_w20_until30",
         label="Mean helix rung fraction at 2.0 until step 30",
         schedule=schedule.released("helix_mean_w20_until30", "helix_mean", 2.0, 30),
-        note=(
-            "One release in the scan that holds the weight at 2.0 from step 0 "
-            "and moves only the step it is withdrawn. The delayed arms show "
-            "the fold committing inside the first few steps; these ask whether "
-            "the commitment the weight makes in those same steps is equally "
-            "durable once the weight is gone. Released at step 0 is the "
-            "unsteered arm and never released is helix_mean_w20, so both ends "
-            "of this scan are campaigns that already exist. Outside the grid: "
-            "one target, run as a diagnostic."
-        ),
     ),
     "helix_mean_w20_until40": ArmSpec(
         key="helix_mean_w20_until40",
         label="Mean helix rung fraction at 2.0 until step 40",
         schedule=schedule.released("helix_mean_w20_until40", "helix_mean", 2.0, 40),
-        note=(
-            "One release in the scan that holds the weight at 2.0 from step 0 "
-            "and moves only the step it is withdrawn. The delayed arms show "
-            "the fold committing inside the first few steps; these ask whether "
-            "the commitment the weight makes in those same steps is equally "
-            "durable once the weight is gone. Released at step 0 is the "
-            "unsteered arm and never released is helix_mean_w20, so both ends "
-            "of this scan are campaigns that already exist. Outside the grid: "
-            "one target, run as a diagnostic."
-        ),
     ),
     "helix_mean_w20_until50": ArmSpec(
         key="helix_mean_w20_until50",
         label="Mean helix rung fraction at 2.0 until step 50",
         schedule=schedule.released("helix_mean_w20_until50", "helix_mean", 2.0, 50),
-        note=(
-            "One release in the scan that holds the weight at 2.0 from step 0 "
-            "and moves only the step it is withdrawn. The delayed arms show "
-            "the fold committing inside the first few steps; these ask whether "
-            "the commitment the weight makes in those same steps is equally "
-            "durable once the weight is gone. Released at step 0 is the "
-            "unsteered arm and never released is helix_mean_w20, so both ends "
-            "of this scan are campaigns that already exist. Outside the grid: "
-            "one target, run as a diagnostic."
-        ),
     ),
     "helix_mean_w20_from1": ArmSpec(
         key="helix_mean_w20_from1",
         label="Mean helix rung fraction at 2.0 from step 1",
         schedule=schedule.delayed("helix_mean_w20_from1", "helix_mean", 2.0, 1),
-        note=(
-            "One onset in the fine half of the scan. At onset 0 the weight "
-            "takes the fold to sheet and at onset 10 it no longer does, while "
-            "the unsteered run is already at three quarters of its final helix "
-            "by step 10, so whatever decides the fold happens in between. "
-            "Outside the grid: one target, run as a diagnostic."
-        ),
     ),
     "helix_mean_w20_from2": ArmSpec(
         key="helix_mean_w20_from2",
         label="Mean helix rung fraction at 2.0 from step 2",
         schedule=schedule.delayed("helix_mean_w20_from2", "helix_mean", 2.0, 2),
-        note=(
-            "One onset in the fine half of the scan. At onset 0 the weight "
-            "takes the fold to sheet and at onset 10 it no longer does, while "
-            "the unsteered run is already at three quarters of its final helix "
-            "by step 10, so whatever decides the fold happens in between. "
-            "Outside the grid: one target, run as a diagnostic."
-        ),
     ),
     "helix_mean_w20_from4": ArmSpec(
         key="helix_mean_w20_from4",
         label="Mean helix rung fraction at 2.0 from step 4",
         schedule=schedule.delayed("helix_mean_w20_from4", "helix_mean", 2.0, 4),
-        note=(
-            "One onset in the fine half of the scan. At onset 0 the weight "
-            "takes the fold to sheet and at onset 10 it no longer does, while "
-            "the unsteered run is already at three quarters of its final helix "
-            "by step 10, so whatever decides the fold happens in between. "
-            "Outside the grid: one target, run as a diagnostic."
-        ),
     ),
     "helix_mean_w20_from7": ArmSpec(
         key="helix_mean_w20_from7",
         label="Mean helix rung fraction at 2.0 from step 7",
         schedule=schedule.delayed("helix_mean_w20_from7", "helix_mean", 2.0, 7),
-        note=(
-            "One onset in the fine half of the scan. At onset 0 the weight "
-            "takes the fold to sheet and at onset 10 it no longer does, while "
-            "the unsteered run is already at three quarters of its final helix "
-            "by step 10, so whatever decides the fold happens in between. "
-            "Outside the grid: one target, run as a diagnostic."
-        ),
     ),
     "helix_mean_w20_from10": ArmSpec(
         key="helix_mean_w20_from10",
         label="Mean helix rung fraction at 2.0 from step 10",
         schedule=schedule.delayed("helix_mean_w20_from10", "helix_mean", 2.0, 10),
-        note=(
-            "One onset in the scan that holds the weight at 2.0 and moves only "
-            "the step it arrives. From step 0 the weight takes the fold to "
-            "sheet; withheld to step 50 it leaves the fold where the unsteered "
-            "objective put it. The scan asks where between those the design "
-            "stops being steerable. Outside the grid: one target, run as a "
-            "diagnostic."
-        ),
     ),
     "helix_mean_w20_from20": ArmSpec(
         key="helix_mean_w20_from20",
         label="Mean helix rung fraction at 2.0 from step 20",
         schedule=schedule.delayed("helix_mean_w20_from20", "helix_mean", 2.0, 20),
-        note=(
-            "One onset in the scan that holds the weight at 2.0 and moves only "
-            "the step it arrives. From step 0 the weight takes the fold to "
-            "sheet; withheld to step 50 it leaves the fold where the unsteered "
-            "objective put it. The scan asks where between those the design "
-            "stops being steerable. Outside the grid: one target, run as a "
-            "diagnostic."
-        ),
     ),
     "helix_mean_w20_from30": ArmSpec(
         key="helix_mean_w20_from30",
         label="Mean helix rung fraction at 2.0 from step 30",
         schedule=schedule.delayed("helix_mean_w20_from30", "helix_mean", 2.0, 30),
-        note=(
-            "One onset in the scan that holds the weight at 2.0 and moves only "
-            "the step it arrives. From step 0 the weight takes the fold to "
-            "sheet; withheld to step 50 it leaves the fold where the unsteered "
-            "objective put it. The scan asks where between those the design "
-            "stops being steerable. Outside the grid: one target, run as a "
-            "diagnostic."
-        ),
     ),
     "helix_mean_w20_from40": ArmSpec(
         key="helix_mean_w20_from40",
         label="Mean helix rung fraction at 2.0 from step 40",
         schedule=schedule.delayed("helix_mean_w20_from40", "helix_mean", 2.0, 40),
-        note=(
-            "One onset in the scan that holds the weight at 2.0 and moves only "
-            "the step it arrives. From step 0 the weight takes the fold to "
-            "sheet; withheld to step 50 it leaves the fold where the unsteered "
-            "objective put it. The scan asks where between those the design "
-            "stops being steerable. Outside the grid: one target, run as a "
-            "diagnostic."
-        ),
     ),
     "helix_mean_w50": ArmSpec(
         key="helix_mean_w50",
         label="Mean helix rung fraction at 5.0",
         schedule=schedule.constant("helix_mean_w50", "helix_mean", 5.0),
-        note=(
-            "Second rung of the weight ladder. At 0.5 the averaged term left a "
-            "median helix fraction of 0.779 on PD-L1 against the capped "
-            "barrier's 0.000, and no design reached any sheet, so the ladder "
-            "asks how far the weight has to rise before the averaged term "
-            "reproduces that collapse."
-        ),
     ),
 }
 
@@ -487,13 +291,79 @@ CAMPAIGN_ARMS: tuple[str, ...] = (
 )
 """The arms run across every target: unsteered, then the weight scan.
 
-Every registered arm is either in this grid or in one of the schedule scans.
-Arms that earlier versions of this work ran and no longer report are not kept
-registered, so the registry and the publication describe the same experiment.
+The publication also uses the onset and withdrawal scans below.
 """
+
+PRIMARY_CRITIC = "ESMFold2-Experimental-Fast-Cutoff2025"
+CRITIC_MODELS = (
+    "ESMFold2-Experimental-Fast",
+    PRIMARY_CRITIC,
+    "ESMFold2-Experimental",
+    "ESMFold2-Experimental-Cutoff2025",
+)
+INITIALIZATION_BASELINES = ("vanilla", "helix_mean_w10", "helix_mean_w20")
 
 N_SEEDS = 30
 SGD_STEPS = 150
+
+# Initialization follow-ups use the same target registry and campaign defaults.
+INITIALIZATION_TARGET = "pdl1_igv"
+INITIALIZATION_SPECS = {
+    "softness": {
+        "checkpoint": PRIMARY_CRITIC,
+        "length": 120,
+        "num_loops": 1,
+        "sampling_steps": 50,
+        "modes": ["soft", "onehot", "discrete"],
+        "dropout": [0.0, 0.5],
+        "replicates": 2,
+        "inputs": 10,
+        "torch_compile": False,
+        "controls": [
+            {
+                "name": "alpha_4HRR_A",
+                "sequence": (
+                    "VDAAVAKVCGSEAIKANLRRSWGVLSADIEATGLMLMSNLFTLRPDTKTYFTRLGDVQKGKANSKLRGHA"
+                    "ITLTYALNNFVDSLDDPSRLKCVVEKFAVNHINRKISGDAFGAIVEPMKETLKARMGNYYSDDVAGAWAA"
+                    "LVGVVQAAL"
+                ),
+            },
+            {
+                "name": "beta_4Z2O_A",
+                "sequence": (
+                    "SPDMKLLAGASNWVNQSGSVAQFVFTPSPTQPQTYEVSGNYINNAQGTGCKGTPYPLSGAYYSGNQIISF"
+                    "SVVWSNASANCQSATGWTGYFDFSGSQAVLKTDWNLAFYSGSTPAIQQGQDDFMQSV"
+                ),
+            },
+            {
+                "name": "mixed_3VZ9_B",
+                "sequence": (
+                    "TKERVERLCKSKELFEERLGLEIRRIHNEQLQFIFRHIDHKDPDKPYMFTLSINEQGDYEVTSCTPPLDC"
+                    "ISEFQLKVRETNNFSAFIANIRKAFTALSFKQS"
+                ),
+            },
+        ],
+    },
+    "short": {
+        "binder_length": 120,
+        "pairs": 5,
+        "updates": 40,
+        "annealing_horizon": SGD_STEPS,
+        "epsilon": 0.12,
+        "coordinate_solver_steps": 50,
+    },
+    "full": {
+        "steps": SGD_STEPS,
+        "optimization_solver_steps": 1,
+        "confidence_selection_solver_steps": 1,
+        "critic_solver_steps": 200,
+        "critic_num_loops": 3,
+        "primary_critic": PRIMARY_CRITIC,
+        "n_seeds": N_SEEDS,
+        "temperatures": [1, 2, 4],
+        "steering": "none",
+    },
+}
 
 ONSET_SCAN: dict[int, str] = {
     0: "helix_mean_w20",
@@ -550,3 +420,11 @@ def arm(key: str) -> ArmSpec:
     if key not in ARM_SPECS:
         raise KeyError(f"unknown arm {key!r}; registered: {sorted(ARM_SPECS)}")
     return ARM_SPECS[key]
+
+
+def publication_campaigns() -> list[tuple[str, str]]:
+    """The exact target–arm combinations used by the publication."""
+    grid = {(t, a) for t in TARGET_SPECS for a in CAMPAIGN_ARMS}
+    grid.update((INITIALIZATION_TARGET, a) for a in ONSET_SCAN.values())
+    grid.update((INITIALIZATION_TARGET, a) for a in RELEASE_SCAN.values())
+    return sorted(grid)

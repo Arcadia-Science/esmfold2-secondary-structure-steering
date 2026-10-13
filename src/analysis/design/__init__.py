@@ -51,6 +51,9 @@ Layout, with the upstream line ranges each module holds:
 - :mod:`analysis.design.models` (1061-1095)
 - :mod:`analysis.design.loop` (64-67, 815-825, 828-1056, 1098-1176), extended
 
+:mod:`analysis.design.initialization` adds this publication's matched-input
+experiments on top of the shared engine; it has no upstream counterpart.
+
 Importing this package needs ``esm`` and the Biohub ``transformers`` fork.
 Running a design also needs a CUDA device: the ported code calls ``.cuda()``
 directly, as upstream does.

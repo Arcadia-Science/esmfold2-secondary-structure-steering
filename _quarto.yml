@@ -65,6 +65,7 @@ website:
 format:
   Arcadia-Science/arcadia-pub-theme-html:
     html-math-method: katex
+    css: assets/styles.css
 shortcodes:
 - _extensions/mcanouil/iconify/iconify.lua
 filters:

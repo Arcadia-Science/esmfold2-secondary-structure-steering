@@ -5,7 +5,7 @@ Three colour schemes, each matched to what it encodes.
 The Question 1 panels use one hue per secondary-structure state, so a panel is
 read by its own colour rather than by a shared key.
 
-Steering weight is ordered, so the panels that encode it use a single-hue
+Steering weight is ordered, so most panels that encode it use a single-hue
 sequential ramp rather than categorical hues, and that ramp is grey: the
 quantity plotted against it is already carried by a hue of its own, and a grey
 weight scale leaves that hue to it. The unsteered arm is the ramp's lightest
@@ -14,11 +14,10 @@ of the scale and not a separate condition. Five steps run light to dark from
 chateau to pitch, with a worst pair anywhere of 12.7 over the three vision
 models.
 
-Targets are categorical and take five hues, but not the house categorical
-order, which fails at five: its first five put aegean against aster at a colour
-difference of 4 under simulated dichromacy and 7 even in normal vision. The
-five in use were found by search, and are recorded with their measurements at
-``TARGET_COLORS``.
+Secondary-structure boxplots use their state's colour at uniform opacity.
+
+Targets use the five cool tones in ``TARGET_COLORS``, selected by comparing
+palette variants of the same target-specific boxplots.
 
 Composition in Question 1 is always plotted against chain length. Short natural
 proteins are helix-biased too, so a single pooled comparison would confound
@@ -33,6 +32,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from matplotlib.colors import to_hex, to_rgba
+from matplotlib.ticker import MaxNLocator
 
 apc.mpl.setup()
 
@@ -298,7 +298,9 @@ def _binned_means(values: pd.Series, lengths: pd.Series, edges: np.ndarray) -> p
     a median reads as exactly zero for both the designs and a fifth of the
     natural set, which hides the difference instead of showing it.
     """
-    binned = pd.cut(lengths, bins=edges, right=False)
+    inclusive_edges = np.asarray(edges, dtype=float).copy()
+    inclusive_edges[-1] = np.nextafter(inclusive_edges[-1], np.inf)
+    binned = pd.cut(lengths, bins=inclusive_edges, right=False)
     grouped = values.groupby(binned, observed=False)
     counts = grouped.size()
     means = grouped.mean()
@@ -324,8 +326,7 @@ def composition_bars(
 
     Five equally spaced length bins across the range the design loop samples
     binders from. Bars are bin means with standard-error whiskers. The
-    reference whiskers are the small ones: each reference bar rests on about
-    400 chains against 20 to 40 designs.
+    Each natural reference chain contributes once to its length bin.
 
     One hue per state, so a panel is read by its own colour rather than by a
     shared two-colour key. Within each length bin the natural reference is the
@@ -407,23 +408,16 @@ TARGET_LABELS = {
 figure caption, not for five x-axis labels that have to stay narrow."""
 
 TARGET_COLORS = {
-    "egfr_d3": apc.aegean.hex_code,
-    "pdgfrb_d2d3": apc.matcha.hex_code,
-    "pdl1_igv": apc.tanzanite.hex_code,
-    "ctla4_igv": apc.terracotta.hex_code,
-    "cd45_d3d4": apc.rose.hex_code,
+    "egfr_d3": "#305F8C",
+    "pdgfrb_d2d3": "#2B8C91",
+    "pdl1_igv": "#6C70B5",
+    "ctla4_igv": "#6B9A80",
+    "cd45_d3d4": "#A16F9B",
 }
 """One hue per target, attached to the target rather than to its rank, so a
 panel that reorders the targets does not repaint them.
 
-The house categorical order is not usable at five series here. Simulating
-protanopia and deuteranopia through the Vienot-Brettel-Mollon transform and
-measuring OKLab dE, its first five colours put aegean against aster at dE 4 and
-amber against lime at 6, and aegean against aster reads 7 even in normal
-vision. This set was chosen by searching the house colours for the five whose
-worst pair is furthest apart: it holds dE 19 in normal vision and 11 under
-either simulation, against a target of 8. The three secondary-structure states
-are excluded from the search, so no target wears the colour of a state.
+The approved cool-tones palette is option 6 in the target-palette comparison.
 """
 
 
@@ -552,6 +546,162 @@ def _scan_strip(
     axis.set_ylabel(spec.design_label)
     apc.mpl.style_plot(axis, categorical_axes="x")
     figure.tight_layout()
+    return figure
+
+
+def scan_violin(designs: pd.DataFrame, arms: list[str], metric: str) -> plt.Figure:
+    """Pooled design distributions, with empirical medians and quartiles.
+
+    Violin densities are evaluated only over each group's observed range.
+    Each violin has the same maximum width; width does not encode sample size.
+    """
+    spec = METRICS[metric]
+    scaled = {key: plt.rcParams[key] * FONT_SCALE for key in FONT_SIZE_KEYS}
+    with plt.rc_context(scaled):
+        figure, axis = plt.subplots(figsize=PANEL_SIZE_INCHES)
+        values = [designs.loc[designs["arm"] == arm, spec.column].to_numpy() for arm in arms]
+        if any(len(group) == 0 for group in values):
+            raise ValueError("every steering weight needs at least one design")
+        positions = np.arange(len(arms))
+        violins = axis.violinplot(
+            values,
+            positions=positions,
+            widths=0.8,
+            points=200,
+            showextrema=False,
+            bw_method="scott",
+        )
+        fill_color = STATES[metric].colour if metric in STATES else ERROR_COLOR
+        for body in violins["bodies"]:
+            body.set_alpha(1.0)
+            body.set_facecolor(fill_color)
+            body.set_edgecolor("none")
+            body.set_linewidth(0)
+        for position, group in zip(positions, values, strict=True):
+            low, median, high = np.quantile(group, [0.25, 0.5, 0.75])
+            axis.vlines(position, low, high, color="black", linewidth=3, zorder=3)
+            axis.scatter(
+                position,
+                median,
+                s=26,
+                color=apc.parchment.hex_code,
+                edgecolor=ERROR_COLOR,
+                linewidth=0.8,
+                zorder=4,
+            )
+        axis.set_xticks(positions, [ARM_LABELS[arm] for arm in arms])
+        axis.set_xlim(-0.6, len(arms) - 0.4)
+        axis.set_ylim(-0.025, 1.025)
+        axis.set_yticks(np.linspace(0, 1, 6))
+        axis.set_xlabel(LEGEND_TITLE)
+        axis.set_ylabel(spec.design_label)
+        apc.mpl.style_plot(axis, categorical_axes="x")
+        figure.tight_layout()
+        return figure
+
+
+def scan_boxplots(
+    designs: pd.DataFrame,
+    target_order: list[str],
+    arms: list[str],
+    metrics: tuple[str, ...] = ("helix", "sheet", "loop"),
+) -> plt.Figure:
+    """A compact grid with shared target headings and steering-weight labels."""
+    # Reduce category spacing and canvas width together to retain box width on the page.
+    positions = np.arange(len(arms)) * 0.82
+    figure, axes = plt.subplots(
+        len(metrics),
+        len(target_order),
+        figsize=(6.25, 1.6 * len(metrics) + 0.4),
+        dpi=160,
+        sharex=True,
+        sharey="row",
+        squeeze=False,
+    )
+    for row, metric in enumerate(metrics):
+        state = STATES.get(metric)
+        if state is not None:
+            value_column = state.design_column
+            label = f"{state.label} fraction"
+            limits = (-0.035, 1.035)
+            ticks = [0, 0.25, 0.5, 0.75, 1]
+        else:
+            value_column = METRICS[metric].column
+            label = {"iptm": "ipTM", "plddt": "Binder pLDDT"}[metric]
+            limits = confidence_limits(designs, metric, target_order, arms)
+            ticks = [
+                tick
+                for tick in MaxNLocator(nbins=4).tick_values(*limits)
+                if limits[0] <= tick <= limits[1]
+            ]
+        # The same designs receive the same horizontal offsets in every row.
+        generator = np.random.default_rng(42)
+        for column, (axis, target) in enumerate(zip(axes[row], target_order, strict=True)):
+            for position, arm in zip(positions, arms, strict=True):
+                values = designs.loc[
+                    (designs["target"] == target) & (designs["arm"] == arm),
+                    value_column,
+                ].to_numpy()
+                axis.boxplot(
+                    values,
+                    positions=[position],
+                    widths=0.62,
+                    patch_artist=True,
+                    showfliers=False,
+                    manage_ticks=False,
+                    whis=1.5,
+                    boxprops={
+                        "facecolor": to_rgba(
+                            state.colour if state is not None else TARGET_COLORS[target], 0.75
+                        ),
+                        "edgecolor": "black",
+                        "linewidth": 0.6,
+                    },
+                    whiskerprops={"color": "black", "linewidth": 0.6},
+                    capprops={"color": "black", "linewidth": 0.6},
+                    medianprops={"color": "black", "linewidth": 0.9},
+                )
+                axis.scatter(
+                    position + generator.uniform(-0.19, 0.19, len(values)),
+                    values,
+                    s=4,
+                    color=ERROR_COLOR,
+                    alpha=0.85,
+                    edgecolor="white",
+                    linewidth=0.1,
+                    zorder=3,
+                )
+            if row == 0:
+                axis.set_title(TARGET_LABELS[target], fontsize=10, pad=7)
+            axis.set_xticks(
+                positions,
+                [f"{float(ARM_WEIGHT_LABELS[arm]):g}" for arm in arms],
+            )
+            axis.set_xlim(positions[0] - 0.48, positions[-1] + 0.48)
+            axis.set_ylim(*limits)
+            apc.mpl.style_plot(axis, categorical_axes="x")
+            axis.set_yticks(ticks, [f"{tick:g}" for tick in ticks])
+            axis.tick_params(axis="both", labelsize=9, pad=3)
+            axis.tick_params(axis="y", left=True, labelleft=column == 0, length=2.5)
+            axis.tick_params(
+                axis="x",
+                bottom=row == len(metrics) - 1,
+                labelbottom=row == len(metrics) - 1,
+            )
+            axis.spines["bottom"].set_visible(True)
+            axis.spines["left"].set_visible(True)
+            if column == 0:
+                axis.set_ylabel(label, fontsize=10)
+    height = figure.get_figheight()
+    figure.subplots_adjust(
+        left=0.104,
+        right=0.994,
+        bottom=0.52 / height,
+        top=1 - 0.312 / height,
+        wspace=0.08,
+        hspace=0.12,
+    )
+    figure.text(0.549, 0.104 / height, "Steering weight", ha="center", fontsize=10)
     return figure
 
 
@@ -1106,83 +1256,72 @@ def schedule_confidence(
     axis_label: str,
     baseline: int,
     never: int,
+    limits: dict[str, tuple[float, float]] | None = None,
 ) -> plt.Figure:
-    """Both confidence metrics against the step a weight switches, every design drawn.
-
-    Every design is a dot, and a box over them carries the quartiles, the median
-    and whiskers at 1.5 times the interquartile range. The axis starts at the
-    lowest design rather than at zero, since nothing here is read by length.
-
-    The boxes are the neutral grey of the other confidence panels. Every steered
-    column here carries the same weight, so the dots take that weight's step on
-    the ramp rather than a ramp of their own; the switching step is already the
-    x axis. The column whose weight never acts keeps the baseline colour, which
-    is the one thing colour is doing in this panel.
-    """
-    scaled = {key: plt.rcParams[key] * FONT_SCALE for key in FONT_SIZE_KEYS}
-    with plt.rc_context(scaled):
-        return _schedule_confidence(designs, scan, axis_label, baseline, never)
-
-
-def _schedule_confidence(
-    designs: pd.DataFrame,
-    scan: dict[int, str],
-    axis_label: str,
-    baseline: int,
-    never: int,
-) -> plt.Figure:
-    figure, axes = plt.subplots(len(COST_METRICS), 1, figsize=WIDE_SIZE_INCHES, sharex=True)
-    generator = np.random.default_rng(STRIP_JITTER_SEED)
-
+    """Final confidence distributions, with optional shared limits across schedules."""
+    figure, axes = plt.subplots(2, 1, figsize=SCAN_TRACE_SIZE_INCHES, dpi=160, sharex=True)
     steps = sorted(scan)
-    steered = scan[max(scan, key=lambda step: abs(step - baseline))]
-    colours = {
-        step: (BASELINE_COLOR if step == baseline else ARM_COLORS[steered]) for step in steps
-    }
-
+    positions = np.arange(len(steps)) * 0.82
+    target = designs["target"].unique().item()
     for axis, key in zip(axes, COST_METRICS, strict=True):
         spec = METRICS[key]
-        lowest, highest = np.inf, -np.inf
-        for position, step in enumerate(steps):
+        generator = np.random.default_rng(42)
+        for position, step in zip(positions, steps, strict=True):
             values = designs.loc[designs["arm"] == scan[step], spec.column].to_numpy()
             if not len(values):
                 raise ValueError(f"no designs for {scan[step]}")
-            lowest, highest = min(lowest, values.min()), max(highest, values.max())
-            _style_box(
-                axis.boxplot(
-                    values,
-                    positions=[position],
-                    widths=SCHEDULE_BOX_WIDTH,
-                    patch_artist=True,
-                    showfliers=False,
-                    zorder=2,
-                ),
-                BOX_NEUTRAL,
-                BOX_NEUTRAL,
-                BOX_ALPHA,
-                SCHEDULE_MEDIAN_WIDTH,
-            )
-            jitter = generator.uniform(-SCHEDULE_JITTER_WIDTH, SCHEDULE_JITTER_WIDTH, len(values))
-            axis.scatter(
-                position + jitter,
+            colour = BASELINE_COLOR if step == baseline else TARGET_COLORS[target]
+            axis.boxplot(
                 values,
-                s=COST_DOT_SIZE_POINTS,
-                color=colours[step],
-                edgecolor=apc.parchment.hex_code,
-                linewidth=COST_DOT_EDGE_WIDTH,
+                positions=[position],
+                widths=0.62,
+                patch_artist=True,
+                showfliers=False,
+                manage_ticks=False,
+                whis=1.5,
+                boxprops={
+                    "facecolor": to_rgba(colour, 0.75),
+                    "edgecolor": "black",
+                    "linewidth": 0.6,
+                },
+                whiskerprops={"color": "black", "linewidth": 0.6},
+                capprops={"color": "black", "linewidth": 0.6},
+                medianprops={"color": "black", "linewidth": 0.9},
+            )
+            axis.scatter(
+                position + generator.uniform(-0.19, 0.19, len(values)),
+                values,
+                s=6,
+                color=ERROR_COLOR,
+                alpha=0.85,
+                edgecolor="white",
+                linewidth=0.1,
                 zorder=3,
             )
-        pad = (highest - lowest) * COST_AXIS_PAD_FRACTION
-        axis.set_ylim(lowest - pad, highest + pad)
-        axis.set_ylabel(spec.design_label)
+        bounds = (
+            limits[key]
+            if limits is not None
+            else confidence_limits(designs, key, [target], list(scan.values()))
+        )
+        axis.set_ylim(*bounds)
+        axis.set_ylabel({"iptm": "ipTM", "plddt": "Binder pLDDT"}[key], fontsize=13)
         apc.mpl.style_plot(axis, categorical_axes="x")
-
-    axes[-1].set_xticks(np.arange(len(steps)))
-    axes[-1].set_xticklabels([_scan_label(step, never) for step in steps])
-    axes[-1].set_xlim(-0.6, len(steps) - 0.4)
-    axes[-1].set_xlabel(axis_label)
-    axes[0].tick_params(labelbottom=False)
-    figure.tight_layout()
+        ticks = [
+            tick
+            for tick in MaxNLocator(nbins=4).tick_values(*bounds)
+            if bounds[0] <= tick <= bounds[1]
+        ]
+        axis.set_yticks(ticks, [f"{tick:g}" for tick in ticks])
+        axis.tick_params(axis="both", labelsize=11, pad=3)
+        axis.spines["bottom"].set_visible(True)
+        axis.spines["left"].set_visible(True)
+    axes[-1].set_xticks(
+        positions, [_scan_label(step, never) for step in steps], rotation=45, ha="right"
+    )
+    axes[-1].set_xlim(positions[0] - 0.48, positions[-1] + 0.48)
+    axes[-1].set_xlabel(axis_label, fontsize=13)
+    axes[0].tick_params(axis="x", bottom=False, labelbottom=False)
+    figure.subplots_adjust(left=0.17, right=0.99, bottom=0.19, top=0.97, hspace=0.14)
     return figure
 
 
@@ -1212,9 +1351,11 @@ of the legend alone, which over three columns underlines a third of the row.
 
 
 def composition_stack(
-    designs: pd.DataFrame, target: str, arms: list[str], natural: pd.DataFrame
+    designs: pd.DataFrame, target: str | None, arms: list[str], natural: pd.DataFrame
 ) -> plt.Figure:
     """Seed-averaged secondary-structure composition across the weight scan.
+
+    Passing ``target=None`` pools designs from all targets in the input table.
 
     The three states sum to the whole scored chain on every design, so their
     means over a seed set sum to one as well and each bar is still a whole
@@ -1237,17 +1378,18 @@ def composition_stack(
 
 
 def _composition_stack(
-    designs: pd.DataFrame, target: str, arms: list[str], natural: pd.DataFrame
+    designs: pd.DataFrame, target: str | None, arms: list[str], natural: pd.DataFrame
 ) -> plt.Figure:
     figure, axis = plt.subplots(figsize=PANEL_SIZE_INCHES)
     positions = np.arange(len(arms))
 
-    rows = {arm: designs[(designs["target"] == target) & (designs["arm"] == arm)] for arm in arms}
+    selected = designs if target is None else designs[designs["target"] == target]
+    rows = {arm: selected[selected["arm"] == arm] for arm in arms}
     counts = {arm: len(frame) for arm, frame in rows.items()}
     if len(set(counts.values())) != 1 or min(counts.values()) == 0:
         raise ValueError(
             f"a mean per arm needs the same non-zero design count in every arm, "
-            f"and {target} has {counts}"
+            f"and {target or 'all targets'} has {counts}"
         )
 
     absent = [

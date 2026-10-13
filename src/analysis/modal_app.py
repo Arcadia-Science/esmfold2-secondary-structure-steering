@@ -34,17 +34,24 @@ Unlike upstream's ``ESMFold2DesignModal``, the Modal class here holds an
 ``ESMFold2Design`` rather than subclassing it, and imports it inside
 :meth:`load`. That keeps ``modal deploy`` runnable from an environment that has
 only ``modal`` installed, without ``esm`` or the Biohub ``transformers`` fork.
+
+The same design worker runs prior-initialized designs and paired trajectories.
+Paired runs disable critic loading. ``FixedInputModal`` shares the app and image
+but loads one uncompiled model for the zero-update screen. Model outputs and
+provenance from these experiments are preserved in the app's run volume.
 """
 
 import gzip
+import hashlib
 import json
 import os
+from pathlib import Path
 from typing import Any
 
 import modal
 
 from analysis import loss_trace
-from analysis.targets import DEFAULT_TARGET, SGD_STEPS
+from analysis.targets import DEFAULT_TARGET, INITIALIZATION_SPECS, PRIMARY_CRITIC, SGD_STEPS
 from analysis.targets import arm as get_arm
 
 APP_NAME = os.environ.get("ESMFOLD2_SS_APP_NAME", "esmfold2-ss-steering")
@@ -97,7 +104,6 @@ def pin_esmc_revision(revision: str) -> None:
 
 DEFAULT_ARM = "vanilla"
 BINDER_NAME = "minibinder"
-PRIMARY_CRITIC = "ESMFold2-Experimental-Fast-Cutoff2025"
 
 
 def get_base_image():
@@ -152,10 +158,15 @@ def get_base_image():
 
 image = get_base_image().pip_install("pandas", "pydssp").add_local_python_source("analysis")
 
+study = modal.Volume.from_name(f"{APP_NAME}-runs", create_if_missing=True)
+
 app = modal.App(
     name=APP_NAME,
     image=image,
-    volumes={"/models": modal.Volume.from_name("esmfold2-models", create_if_missing=True)},
+    volumes={
+        "/models": modal.Volume.from_name("esmfold2-models", create_if_missing=True),
+        "/study": study,
+    },
 )
 
 
@@ -206,6 +217,7 @@ class ESMFold2DesignModal:
     """
 
     use_scaling_critics: bool = modal.parameter(default=False)
+    load_critics: bool = modal.parameter(default=True)
 
     @modal.enter()
     def load(self) -> None:
@@ -214,7 +226,14 @@ class ESMFold2DesignModal:
         pin_esmc_revision(ESMC_REVISION)
 
         self.driver = ESMFold2Design()
+        if not self.load_critics:
+            self.driver.hero_critic_hf_paths = []
         self.driver.load(self.use_scaling_critics)
+        self.sources, self.audit = runtime_provenance()
+        self.audit.update(
+            models={n: m.config.to_dict() for n, m in self.driver.inversion_models.items()},
+            torch_compile=True,
+        )
 
     @modal.method()
     def design(
@@ -226,6 +245,8 @@ class ESMFold2DesignModal:
         arm: str = DEFAULT_ARM,
         sampling_steps: int = 0,
         log_step_structures: bool = False,
+        stop_after_steps: int | None = None,
+        snapshot_sampling_steps: int | None = None,
     ) -> dict[str, Any]:
         """Run one binder design; return metrics, the complex, and the loss log.
 
@@ -237,7 +258,11 @@ class ESMFold2DesignModal:
         default arm carries no steering term, so it reproduces the cookbook
         objective.
 
-        ``steps`` is passed to the design loop as a parameter.
+        ``steps`` sets the annealing horizon. ``stop_after_steps`` optionally
+        truncates optimization while preserving that horizon and skips final
+        sequence selection and critic evaluation for a truncated run.
+        ``snapshot_sampling_steps`` samples logged structures from saved soft
+        states after optimization, using a separate solver budget.
 
         ``sampling_steps`` sets how many solver steps the structure module takes
         on every step of the run, confidence steps included, so a logged
@@ -274,7 +299,24 @@ class ESMFold2DesignModal:
             sampling_steps=solver_steps,
             confidence_sampling_steps=solver_steps,
             log_step_structures=log_step_structures,
+            stop_after_steps=stop_after_steps,
+            snapshot_sampling_steps=snapshot_sampling_steps,
         )
+
+        if stop_after_steps is not None and stop_after_steps < steps:
+            return {
+                "seed": int(seed),
+                "steps": int(steps),
+                "completed_steps": len(trace),
+                "stopped_early": True,
+                "target": target,
+                "arm": arm_spec.key,
+                "schedule": arm_spec.schedule.to_dict(),
+                "sampling_steps": solver_steps,
+                "snapshot_sampling_steps": snapshot_sampling_steps,
+                "step_trace": loss_trace.rows(trace),
+                "step_complexes_gz": _pack_structures(step_structures),
+            }
 
         by_critic = {record["critic_name"]: record for record in critic_results}
         primary = by_critic[PRIMARY_CRITIC]
@@ -312,6 +354,20 @@ class ESMFold2DesignModal:
             "step_complexes_gz": _pack_structures(step_structures),
         }
 
+    @modal.method()
+    def design_prior(self, bundle: dict, protocol: dict) -> bytes:
+        from analysis.design.initialization import design_prior
+
+        if not self.load_critics:
+            raise ValueError("Full designs require the critic models")
+        return design_prior(self.driver, self.audit, self.sources, bundle, protocol, study)
+
+    @modal.method()
+    def design_pair(self, bundle: dict, protocol: dict) -> bytes:
+        from analysis.design.initialization import design_pair
+
+        return design_pair(self.driver, self.audit, self.sources, bundle, protocol, study)
+
 
 @app.local_entrypoint()
 def main(
@@ -338,3 +394,76 @@ def main(
     print(f"critic_plddt_binder={result['critic_plddt_binder']}")
     print(f"step_trace_rows={len(result['step_trace'])}")
     print(f"pdb_chars={len(result['complex_pdb'])}")
+
+
+def runtime_provenance() -> tuple[dict, dict]:
+    """Record model implementation and environment once for each worker container."""
+    import importlib.metadata
+    import inspect
+
+    import torch
+    from transformers.models.esmfold2 import modeling_esmfold2_common as common
+    from transformers.models.esmfold2 import modeling_esmfold2_experimental as experimental
+
+    sources = {
+        Path(inspect.getfile(m)).name: Path(inspect.getfile(m)).read_bytes()
+        for m in (common, experimental)
+    }
+    audit = {
+        "esmc_revision": ESMC_REVISION,
+        "packages": {
+            n: importlib.metadata.version(n) for n in ("torch", "transformers", "esm", "pydssp")
+        },
+        "gpu": torch.cuda.get_device_name(),
+        "source_sha256": {n: hashlib.sha256(v).hexdigest() for n, v in sources.items()},
+    }
+    for name in ("torch", "transformers", "esm"):
+        direct = importlib.metadata.distribution(name).read_text("direct_url.json")
+        if direct:
+            audit[name + "_direct_url"] = json.loads(direct)
+    return sources, audit
+
+
+@app.function(timeout=600, cpu=2)
+def prepare_screen_inputs() -> dict:
+    from analysis.design.initialization import prepare_screen_inputs as prepare
+
+    return prepare()
+
+
+@app.cls(gpu="H100", timeout=3600, cpu=8, memory=64 * 1024, max_containers=5)
+class FixedInputModal:
+    """Single uncompiled model for the zero-update screen and native controls."""
+
+    @modal.enter()
+    def load(self):
+        import inspect
+
+        from analysis.design.models import _load_hf_model
+
+        checkpoint = INITIALIZATION_SPECS["softness"]["checkpoint"]
+        pin_esmc_revision(ESMC_REVISION)
+        self.model = _load_hf_model(checkpoint, 0.5, True, "cuda")
+        self.sources, self.audit = runtime_provenance()
+        self.audit.update(
+            checkpoint=checkpoint,
+            model_config=self.model.config.to_dict(),
+            esmc_config=self.model._esmc.config.to_dict(),
+            parameter_dtype=str(next(self.model.parameters()).dtype),
+            torch_compile=False,
+            forward_signature=str(inspect.signature(self.model.forward)),
+        )
+
+    @modal.method()
+    def screen(self, bundle: bytes, target_sequence: str, protocol_id: str) -> bytes:
+        from analysis.design.initialization import screen
+
+        return screen(
+            self.model, self.audit, self.sources, bundle, target_sequence, protocol_id, study
+        )
+
+    @modal.method()
+    def controls(self, controls: list[dict], protocol_id: str) -> bytes:
+        from analysis.design.initialization import controls as run_controls
+
+        return run_controls(self.model, self.audit, controls, protocol_id, study)

@@ -112,35 +112,35 @@ def a_design(helix: float, sheet: float, iptm: float, binder_plddt: float) -> di
 def test_the_viability_rule_is_a_conjunction() -> None:
     frame = pd.DataFrame(
         [
-            a_design(0.10, 0.30, 0.80, 85.0),
-            a_design(0.25, 0.30, 0.80, 85.0),
-            a_design(0.10, 0.05, 0.80, 85.0),
-            a_design(0.10, 0.30, 0.60, 85.0),
-            a_design(0.10, 0.30, 0.80, 65.0),
+            a_design(0.10, 0.50, 0.90, 85.0),
+            a_design(0.45, 0.50, 0.90, 85.0),
+            a_design(0.10, 0.05, 0.90, 85.0),
+            a_design(0.10, 0.50, 0.60, 85.0),
+            a_design(0.10, 0.50, 0.90, 65.0),
         ]
     )
-    assert list(composition.viable(frame)) == [True, False, False, False, False]
+    assert list(composition.viable(frame)) == [True, True, False, False, False]
+    assert list(composition.viable(frame.drop(columns=["helix (fraction 0-1)"]))) == [
+        True,
+        True,
+        False,
+        False,
+        False,
+    ]
 
 
-def test_the_viability_thresholds_are_inclusive_where_stated() -> None:
-    """Sheet, iptm and pLDDT are 'at least'; helix is 'below'."""
+def test_the_screen_thresholds_are_strict() -> None:
+    """Each exact boundary fails independently; pLDDT uses the 0–100 scale."""
     frame = pd.DataFrame(
         [
-            a_design(
-                composition.MAX_HELIX_FRACTION,
-                composition.MIN_SHEET_FRACTION,
-                composition.MIN_IPTM,
-                composition.MIN_BINDER_PLDDT,
-            ),
-            a_design(
-                composition.MAX_HELIX_FRACTION - 0.01,
-                composition.MIN_SHEET_FRACTION,
-                composition.MIN_IPTM,
-                composition.MIN_BINDER_PLDDT,
-            ),
+            a_design(0.10, 0.40, 0.90, 85.0),
+            a_design(0.10, 0.50, 0.85, 85.0),
+            a_design(0.10, 0.50, 0.90, 80.0),
+            a_design(0.10, 0.50, 0.90, 0.85),
+            a_design(0.45, 0.401, 0.851, 80.1),
         ]
     )
-    assert list(composition.viable(frame)) == [False, True]
+    assert list(composition.viable(frame)) == [False, False, False, False, True]
 
 
 def test_viability_refuses_a_frame_missing_binder_plddt() -> None:

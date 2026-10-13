@@ -1,36 +1,25 @@
-"""Launch and collect design campaigns, gated on what already exists.
+"""Explicitly launch and collect GPU design campaigns.
 
-This is the only module that talks to a GPU. Every entry point checks the
-filesystem first and refuses to redo work:
-
-- :func:`ensure` generates only the campaigns whose composition table is
-  missing, and is what the notebook calls under ``FORCE_RERUN=1``. Without
-  that, the notebook fetches the deposited tables and never comes here.
-- :func:`spawn_campaign` reuses an existing manifest rather than launching a
-  second time, so an interrupted session resumes by collecting.
-- :func:`collect_campaign` refuses to write a partial table.
-
-The three plain functions hold the logic and the typer commands wrap them, so
-the same code path serves a reader working from the notebook and one working
-from a shell.
-
-Regenerating a campaign will not reproduce the designs in the publication. The
-design loop is not seed-reproducible: across two runs of an identically
-configured arm, no seed reproduced its own result and per-seed interface pTM
-moved 0.14 to 0.20. Use the deposited artifacts to reproduce figures, and use
-this module to run the analysis on your own targets.
+Generation reuses existing manifests and checks for model outputs before
+submitting jobs. Collection preserves structures, scores and optimization traces;
+composition and screening counts are calculated in memory. Publication execution
+does not call this module. GPU reruns produce new samples, not exact replicas.
 """
 
 from __future__ import annotations
+import io
 import json
 import time
+import zipfile
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
-from typing import Any
+from pathlib import Path
+from typing import Annotated, Any
 
 import pandas as pd
 import typer
 
-from analysis import artifacts, composition, loss_trace, paths
+from analysis import artifacts, composition, deposit, initialization, loss_trace, paths, priors
 from analysis.targets import (
     ARM_SPECS,
     CAMPAIGN_ARMS,
@@ -96,6 +85,64 @@ def design_record(seed: int, result: dict[str, Any]) -> dict[str, Any]:
     return record
 
 
+def read_manifest(path: Path, *, key: str) -> pd.DataFrame:
+    if path.is_file():
+        frame = pd.read_csv(path)
+    elif key == "run" and (path.parent / "calls.json").is_file():
+        # Existing collected inputs retain their original provenance unchanged.
+        calls = json.loads((path.parent / "calls.json").read_text())
+        frame = pd.DataFrame(
+            [{"run": name, "call_id": item["call_id"]} for name, item in calls.items()],
+            columns=[key, "call_id"],
+        )
+    else:
+        return pd.DataFrame(columns=[key, "call_id"])
+    if (
+        not {key, "call_id"}.issubset(frame.columns)
+        or frame[key].duplicated().any()
+        or frame[[key, "call_id"]].isna().any().any()
+    ):
+        raise ValueError(f"Invalid campaign manifest: {path}")
+    return frame
+
+
+def submit_jobs(path: Path, jobs: list[dict], *, key: str, submit: Callable) -> pd.DataFrame:
+    """Resume submitted jobs and record each new call before submitting the next."""
+    frame = read_manifest(path, key=key)
+    records = frame.to_dict("records")
+    submitted = set(frame[key])
+    identifiers = [job[key] for job in jobs]
+    if len(set(identifiers)) != len(identifiers) or not submitted.issubset(identifiers):
+        raise ValueError("Prepared jobs do not match the existing manifest")
+    for job in jobs:
+        if job[key] in submitted:
+            continue
+        call = submit(job)
+        records.append({key: job[key], "call_id": call.object_id})
+        frame = pd.DataFrame(records)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        partial = path.with_suffix(".tmp")
+        frame.to_csv(partial, index=False)
+        partial.replace(path)
+        submitted.add(job[key])
+    return frame
+
+
+def completed_jobs(manifest: pd.DataFrame) -> Iterator[tuple[Any, Any, str]]:
+    """Poll the same saved Modal call IDs for every experiment kind."""
+    import modal
+
+    for row in manifest.itertuples(index=False):
+        try:
+            value = modal.FunctionCall.from_id(row.call_id).get(timeout=0)
+        except TimeoutError:
+            yield row, None, "pending"
+        except Exception as error:  # noqa: BLE001
+            yield row, None, f"{type(error).__name__}: {error}"
+        else:
+            yield row, value, ""
+
+
 @app.command()
 def status(
     target: str = typer.Option("", help="Limit to one target key."),
@@ -125,9 +172,8 @@ def spawn_campaign(
 ) -> pd.DataFrame:
     """Launch one campaign on Modal and write its call manifest.
 
-    Returns the existing manifest untouched if there is one, so a rerun after
-    an interruption resumes by collecting rather than by paying for the same
-    designs twice.
+    Reuses recorded call IDs and submits only missing seeds. Each call is saved
+    immediately so an interrupted submission can resume from its manifest.
 
     ``sampling_steps`` and ``log_step_structures`` are diagnostic. They are
     recorded in ``protocol.json`` because they change what the run cost and what
@@ -137,8 +183,6 @@ def spawn_campaign(
     spec = get_target(target)
     arm_spec = get_arm(arm)
     manifest_path = paths.campaign_manifest(target, arm)
-    if manifest_path.is_file():
-        return pd.read_csv(manifest_path)
 
     import modal
 
@@ -155,20 +199,24 @@ def spawn_campaign(
         "target_construct_length_residues": spec.construct_length,
         "arm": arm_spec.key,
         "arm_label": arm_spec.label,
-        "arm_note": arm_spec.note,
         "schedule": arm_spec.schedule.to_dict(),
         "n_seeds": n_seeds,
         "sgd_steps": steps,
         "sampling_steps": sampling_steps or None,
         "step_structures_logged": log_step_structures,
     }
-    (directory / "protocol.json").write_text(json.dumps(protocol, indent=2) + "\n")
+    protocol_path = directory / "protocol.json"
+    if protocol_path.is_file():
+        if json.loads(protocol_path.read_text()) != protocol:
+            raise ValueError(f"Campaign settings differ from the saved protocol: {protocol_path}")
+    else:
+        initialization.save(protocol_path, protocol)
 
     remote = modal.Cls.from_name(APP_NAME, REMOTE_CLASS)()
-    rows = []
-    for seed in range(n_seeds):
-        call = remote.design.spawn(
-            seed=seed,
+
+    def submit(job):
+        return remote.design.spawn(
+            seed=job["seed"],
             steps=steps,
             target=spec.key,
             target_sequence=target_sequence,
@@ -176,17 +224,16 @@ def spawn_campaign(
             sampling_steps=sampling_steps,
             log_step_structures=log_step_structures,
         )
-        rows.append({"seed": seed, "call_id": call.object_id})
 
-    manifest = pd.DataFrame(rows)
-    manifest.to_csv(manifest_path, index=False)
-    return manifest
+    return submit_jobs(
+        manifest_path, [{"seed": seed} for seed in range(n_seeds)], key="seed", submit=submit
+    )
 
 
 @app.command()
 def spawn(
-    target: str = typer.Option(..., help="Target key from analysis.targets."),
-    arm: str = typer.Option(..., help="Arm key from analysis.targets."),
+    target: str = typer.Option("", help="Target key from analysis.targets."),
+    arm: str = typer.Option("", help="Arm key from analysis.targets."),
     n_seeds: int = typer.Option(N_SEEDS, help="Designs to generate."),
     steps: int = typer.Option(SGD_STEPS, help="Optimization steps per design."),
     sampling_steps: int = typer.Option(
@@ -199,6 +246,13 @@ def spawn(
     log_step_structures: bool = typer.Option(
         False, help="Return every step's predicted complex as a PDB."
     ),
+    experiment: str = typer.Option(
+        "", help="Prepared initialization experiment: softness, short, full."
+    ),
+    temperature: int = typer.Option(1, help="Initialization temperature for full designs."),
+    root: Annotated[
+        Path, typer.Option(help="Preserved initialization run directory.")
+    ] = paths.INITIALIZATION,
 ) -> None:
     """Launch one campaign on Modal and write its call manifest.
 
@@ -207,6 +261,25 @@ def spawn(
     costs, and logging structures returns one complex per step, so the two
     together turn a design into a trajectory at a many-fold higher price.
     """
+    if experiment:
+        if (
+            target
+            or arm
+            or n_seeds != N_SEEDS
+            or steps != SGD_STEPS
+            or sampling_steps
+            or log_step_structures
+        ):
+            raise typer.BadParameter(
+                "Initialization runs use the prepared protocol; omit campaign overrides"
+            )
+        frame = spawn_initialization(root.expanduser().resolve(), experiment, temperature)
+        typer.echo(f"Recorded {len(frame)} jobs for {experiment}")
+        return
+    if not target or not arm:
+        raise typer.BadParameter("Supply --target and --arm, or --experiment")
+    if temperature != 1 or root != paths.INITIALIZATION:
+        raise typer.BadParameter("--temperature and --root require --experiment")
     if artifacts.status(target, arm).has_results:
         typer.echo(
             f"Results already present for {target} / {arm}: "
@@ -278,9 +351,7 @@ def collect_campaign(target: str, arm: str) -> Collected:
             f"    python -m analysis.campaign spawn --target {target} --arm {arm}"
         )
 
-    import modal
-
-    manifest = pd.read_csv(manifest_path)
+    manifest = read_manifest(manifest_path, key="seed")
     complexes = paths.campaign_complexes(target, arm)
     complexes.mkdir(parents=True, exist_ok=True)
 
@@ -288,15 +359,12 @@ def collect_campaign(target: str, arm: str) -> Collected:
     trace_rows: list[dict[str, object]] = []
     failures: list[str] = []
     pending = 0
-    for row in manifest.itertuples():
-        call = modal.FunctionCall.from_id(row.call_id)
-        try:
-            result = call.get(timeout=0)
-        except TimeoutError:
+    for row, result, error in completed_jobs(manifest):
+        if error == "pending":
             pending += 1
             continue
-        except Exception as error:  # noqa: BLE001
-            failures.append(f"seed {int(row.seed)}: {type(error).__name__}: {error}")
+        if error:
+            failures.append(f"seed {int(row.seed)}: {error}")
             continue
         pdb_text = result.pop("complex_pdb", "")
         if pdb_text:
@@ -310,13 +378,11 @@ def collect_campaign(target: str, arm: str) -> Collected:
 
     frame = pd.DataFrame(records).sort_values("seed")
     frame.to_parquet(paths.campaign_results(target, arm), index=False)
-    frame.to_csv(paths.campaign_dir(target, arm) / "all_results.csv", index=False)
 
     trace = loss_trace.frame(trace_rows)
     trace.to_parquet(paths.campaign_trace(target, arm), index=False)
 
     table = composition.build(target, arm, complexes, paths.campaign_results(target, arm))
-    composition.write(target, arm, table)
 
     summary = {
         "target": target,
@@ -329,7 +395,6 @@ def collect_campaign(target: str, arm: str) -> Collected:
         "trace_rows": int(len(trace)),
         "n_viable": int(composition.viable(table).sum()),
     }
-    (paths.campaign_summary(target, arm)).write_text(json.dumps(summary, indent=2) + "\n")
     return Collected(
         target=target,
         arm=arm,
@@ -343,11 +408,25 @@ def collect_campaign(target: str, arm: str) -> Collected:
 
 @app.command()
 def collect(
-    target: str = typer.Option(..., help="Target key from analysis.targets."),
-    arm: str = typer.Option(..., help="Arm key from analysis.targets."),
+    target: str = typer.Option("", help="Target key from analysis.targets."),
+    arm: str = typer.Option("", help="Arm key from analysis.targets."),
     force: bool = typer.Option(False, help="Recollect even if results exist."),
+    experiment: str = typer.Option("", help="Initialization experiment: softness, short, full."),
+    temperature: int = typer.Option(1, help="Initialization temperature for full designs."),
+    root: Annotated[
+        Path, typer.Option(help="Preserved initialization run directory.")
+    ] = paths.INITIALIZATION,
 ) -> None:
     """Gather one campaign's finished calls into its tables and structures."""
+    if experiment:
+        if target or arm:
+            raise typer.BadParameter("Use either --experiment or --target/--arm")
+        collect_initialization(root.expanduser().resolve(), experiment, temperature, force=force)
+        return
+    if not target or not arm:
+        raise typer.BadParameter("Supply --target and --arm, or --experiment")
+    if temperature != 1 or root != paths.INITIALIZATION:
+        raise typer.BadParameter("--temperature and --root require --experiment")
     if artifacts.status(target, arm).has_results and not force:
         typer.echo(
             f"Results already present: {paths.campaign_results(target, arm)}\n"
@@ -360,8 +439,7 @@ def collect(
         f"{target} / {arm}\n"
         f"  {paths.campaign_results(target, arm)}\n"
         f"  {paths.campaign_trace(target, arm)} ({done.n_trace_rows} step rows)\n"
-        f"  {paths.campaign_composition(target, arm)} "
-        f"({done.n_viable} viable of {done.n_designs})"
+        f"  {done.n_viable} screen passes of {done.n_designs}"
     )
 
 
@@ -383,11 +461,9 @@ def ensure(
     steps: int = SGD_STEPS,
     poll_seconds: int = POLL_SECONDS,
 ) -> pd.DataFrame:
-    """Generate every requested campaign whose composition table is missing.
+    """Generate requested campaigns with missing model scores or structures.
 
-    This is the notebook's entry point. The gate is the composition table
-    rather than the results table, because that is the artifact the notebook
-    reads, and a campaign that has everything except it is not usable.
+    Derived measurements are never used to decide whether GPU work is needed.
 
     All missing campaigns are spawned up front so they queue against the whole
     container pool at once rather than one campaign at a time, but each is
@@ -482,6 +558,108 @@ def run(
     names = [a.strip() for a in arms.split(",") if a.strip()] or list(CAMPAIGN_ARMS)
     frame = ensure(keys, names, n_seeds=n_seeds, steps=SGD_STEPS)
     typer.echo(frame.to_string(index=False))
+
+
+@app.command()
+def prepare(
+    experiment: str = typer.Option(..., help="Initialization experiment: softness, short, full."),
+    temperature: int = typer.Option(1, help="Initialization temperature for full designs."),
+    root: Annotated[
+        Path, typer.Option(help="Preserved initialization run directory.")
+    ] = paths.INITIALIZATION,
+) -> None:
+    """Prepare matched initialization inputs before submitting GPU jobs."""
+    typer.echo(initialization.prepare_inputs(root.expanduser().resolve(), experiment, temperature))
+
+
+def spawn_initialization(root: Path, experiment: str, temperature: int) -> pd.DataFrame:
+    import modal
+
+    from analysis.modal_app import APP_NAME
+
+    protocol, jobs = initialization.prepared_jobs(root, experiment, temperature)
+    if protocol["app"] != APP_NAME:
+        raise ValueError(
+            "Prepared inputs name another Modal app; prepare a fresh run for this deployment"
+        )
+    if experiment == "softness":
+        worker = modal.Cls.from_name(APP_NAME, "FixedInputModal")()
+    else:
+        worker = modal.Cls.from_name(APP_NAME, REMOTE_CLASS).with_options(
+            timeout=7200, max_containers=10 if experiment == "full" else 5
+        )(load_critics=experiment == "full")
+    path = initialization.experiment_dir(root, experiment, temperature) / "manifest.csv"
+    return submit_jobs(
+        path,
+        jobs,
+        key="run",
+        submit=lambda job: getattr(worker, job["method"]).spawn(**job["kwargs"]),
+    )
+
+
+def collect_initialization(
+    root: Path, experiment: str, temperature: int, *, force: bool = False
+) -> None:
+    initialization.validate_experiment(experiment, temperature)
+    directory = initialization.experiment_dir(root, experiment, temperature)
+    manifest = read_manifest(directory / "manifest.csv", key="run")
+    if manifest.empty:
+        raise FileNotFoundError(f"No submitted jobs in {directory}")
+    remaining = []
+    for row in manifest.to_dict("records"):
+        destination = directory / row["run"]
+        if not destination.resolve().is_relative_to(directory.resolve()):
+            raise ValueError("Unexpected run path in manifest")
+        if force or not (destination / "collected.json").is_file():
+            remaining.append(row)
+    for row, raw, error in completed_jobs(pd.DataFrame(remaining, columns=manifest.columns)):
+        if error:
+            typer.echo(f"{row.run}: {error}")
+            continue
+        destination = directory / row.run
+        with zipfile.ZipFile(io.BytesIO(raw)) as archive:
+            for member in archive.infolist():
+                path = destination / member.filename
+                if not path.resolve().is_relative_to(destination.resolve()):
+                    raise ValueError("Unexpected archive path")
+                if member.is_dir():
+                    path.mkdir(parents=True, exist_ok=True)
+                else:
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_bytes(archive.read(member))
+        initialization.save(destination / "collected.json", {"call_id": row.call_id})
+        typer.echo(f"Collected {destination}")
+
+
+@app.command()
+def prior() -> None:
+    """Calculate and print amino acid priors without saving a measurement cache."""
+    typer.echo(json.dumps(priors.from_reference(), indent=2))
+
+
+@app.command()
+def package(
+    experiment: str = typer.Option(
+        "campaigns", help="Input archive: campaigns, initialization, reference."
+    ),
+    root: Annotated[
+        Path, typer.Option(help="Initialization run directory, if selected.")
+    ] = paths.INITIALIZATION,
+) -> None:
+    """Package preserved inputs locally; does not upload or publish."""
+    if experiment == "initialization":
+        root = root.expanduser().resolve()
+        artifact = deposit.DataArtifact(
+            deposit.INITIALIZATION_INPUTS.filename, root, "initialization model outputs"
+        )
+        members = deposit.initialization_members(root)
+    elif experiment == "campaigns":
+        artifact, members = deposit.DESIGN_TABLES, deposit.design_members()
+    elif experiment == "reference":
+        artifact, members = deposit.REFERENCE_INPUTS, deposit.reference_members()
+    else:
+        raise typer.BadParameter("Choose campaigns, initialization, or reference")
+    typer.echo(artifact.package(members))
 
 
 if __name__ == "__main__":

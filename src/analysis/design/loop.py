@@ -68,6 +68,7 @@ import math
 import os
 import random
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -172,6 +173,11 @@ def design_binder(
     sampling_steps: int = SAMPLING_STEPS,
     confidence_sampling_steps: int = CONFIDENCE_SAMPLING_STEPS,
     log_step_structures: bool = False,
+    stop_after_steps: int | None = None,
+    snapshot_sampling_steps: int | None = None,
+    initial_logits: torch.Tensor | None = None,
+    initial_prepared: dict | None = None,
+    step_observer: Callable[[dict], None] | None = None,
 ) -> tuple[
     list[str],
     Trajectory,
@@ -198,10 +204,24 @@ def design_binder(
     log is appended as JSON lines; the log is returned either way, so a path is
     only needed when a run has to survive its own process.
 
+    Exploratory callers may supply mutable ``initial_logits`` and matching
+    discrete ``initial_prepared`` features. ``step_observer`` receives detached
+    CPU sequence states and discrete features after each update, including both
+    the pre-update logits used for prediction and the post-update logits.
+    These options are off by default and do not change the return format.
+
     Only single binder and target chains are supported by default. To support
     the multi-chain case, remove the two ``"|" not in`` asserts below and check
     that the losses and the selection metrics are appropriate for it.
     """
+    # Truncate execution without compressing the annealing schedule.
+    run_steps = steps if stop_after_steps is None else stop_after_steps
+    if not 1 <= run_steps <= steps:
+        raise ValueError("stop_after_steps must be between 1 and steps")
+    if snapshot_sampling_steps is not None and (
+        not log_step_structures or snapshot_sampling_steps < 2
+    ):
+        raise ValueError("snapshot_sampling_steps requires structure logging and at least 2 steps")
     device = "cuda"
     if target_name in TARGET_SEQUENCES:
         if target_sequence is not None:
@@ -236,9 +256,22 @@ def design_binder(
         logits = build_initial_soft_sequence_logits(binder_sequence, batch_size=batch_size)
         gradient_mask = build_gradient_mask(binder_sequence, batch_size=batch_size)
 
+    if initial_logits is not None:
+        if binder_sequence != "#" * binder_length:
+            raise ValueError("Custom logits require every binder position to be mutable")
+        if initial_logits.shape != logits.shape or not torch.isfinite(initial_logits).all():
+            raise ValueError("Custom logits must be finite and match the binder shape")
+        from analysis.design.constants import CYS_IDX
+
+        if not (initial_logits[..., CYS_IDX] <= -1e5).all():
+            raise ValueError("Custom logits must retain cysteine exclusion")
+        logits = initial_logits.detach().to(device=device, dtype=logits.dtype).clone()
+        logits.requires_grad_(True)
+
     trajectory: Trajectory = {}
     trace: list[loss_trace.StepRecord] = []
     step_structures: list[str] = []
+    snapshot_states: list[tuple[str, int, torch.Tensor]] = []
     bin_distance = get_mid_points()
     global_step = 0
 
@@ -258,6 +291,7 @@ def design_binder(
         inversion_name = list(inversion_models)[replicate_choice]
         inversion_model = inversion_models[inversion_name]
         design = F.softmax(logits / temperature, dim=-1)
+        pre_update_logits = logits.detach().cpu().clone() if step_observer else None
 
         fold_result = fold_and_get_distogram(
             inversion_model,
@@ -270,6 +304,7 @@ def design_binder(
             ),
             calculate_confidence=calculate_confidence,
             seed=seed + global_step,
+            **({"prepared": initial_prepared} if global_step == 0 and initial_prepared else {}),
         )
         sequences: list[str] = fold_result["seq_list"]
         losses = compute_structure_losses(fold_result["distogram_logits"], binder_length)
@@ -277,7 +312,9 @@ def design_binder(
         steering_losses = compute_steering_losses(
             fold_result["distogram_logits"], binder_length, bin_distance, weights
         )
-        structure_loss = losses["total_loss"] + steering_losses.total
+        structure_loss = schedule.structural_objective(
+            losses["total_loss"], steering_losses.total, global_step
+        )
         structure_grad = torch.autograd.grad(structure_loss.mean(), logits)[0]
 
         design = F.softmax(logits / temperature, dim=-1)
@@ -306,6 +343,8 @@ def design_binder(
         step_losses["plm_loss"] = plm_loss.detach().cpu()
         step_losses["total_loss"] = (structure_loss + plm_loss).detach().cpu()
         step_losses["structure_loss"] = structure_loss.detach().cpu()
+        step_losses["base_structure_loss"] = losses["total_loss"].detach().cpu()
+        step_losses["base_structure_weight"] = schedule.base_structure_weight_at(global_step)
         step_losses["steering_loss"] = steering_losses.total.detach().cpu()
         step_losses["time"] = time.time() - start
         step_losses["peak_allocated_gib"] = torch.cuda.max_memory_allocated() / BYTES_PER_GIB
@@ -353,12 +392,36 @@ def design_binder(
             weights=weights,
         )
         trace.append(record)
+        if step_observer is not None:
+            step_observer(
+                {
+                    "step": step,
+                    "seed": seed + step,
+                    "temperature": temperature,
+                    "inversion_model": inversion_name,
+                    "logits": pre_update_logits,
+                    "post_update_logits": logits.detach().cpu().clone(),
+                    "probabilities": design.detach().cpu().clone(),
+                    "prepared": {
+                        "inputs": {
+                            k: v.detach().cpu().clone()
+                            for k, v in fold_result["inputs"].items()
+                            if k != "res_type_soft"
+                        },
+                        "inputs_list": [],
+                        "seq_list": list(sequences),
+                    },
+                }
+            )
         if trace_path is not None:
             loss_trace.append(record, trace_path)
         if log_step_structures:
-            step_structures.append(
-                build_complex(fold_result["inputs"], fold_result["output"]).to_pdb_string()
-            )
+            if snapshot_sampling_steps is not None:
+                snapshot_states.append((inversion_name, seed + step, design.detach().cpu()))
+            else:
+                step_structures.append(
+                    build_complex(fold_result["inputs"], fold_result["output"]).to_pdb_string()
+                )
 
         global_step += 1
         return logits, sequences, fold_result.get("iptm", None)
@@ -366,7 +429,7 @@ def design_binder(
     optimizer = optim.SGD([logits], lr=LEARNING_RATE)
     best_iptm: list[float] = [-1.0] * batch_size
     best_sequences: list[str] = [""] * batch_size
-    for step in range(steps):
+    for step in range(run_steps):
         t = (step + 1) / steps
         remaining = 0.5 * (1 + math.cos(math.pi * t))
         temperature = TEMPERATURE_MIN + (1 - TEMPERATURE_MIN) * remaining
@@ -381,6 +444,28 @@ def design_binder(
                 if iptm[b] is not None and iptm[b] > best_iptm[b]:
                     best_iptm[b] = iptm[b]
                     best_sequences[b] = sequences[b]
+    # Read out saved soft states only after every optimization update is done.
+    # Sampling these coordinates cannot feed back into the trajectory.
+    for inversion_name, snapshot_seed, soft_design in snapshot_states:
+        with torch.no_grad():
+            sampled = fold_and_get_distogram(
+                inversion_models[inversion_name],
+                target_sequence,
+                target_one_hot,
+                soft_design.to(device),
+                num_loops=1,
+                num_sampling_steps=snapshot_sampling_steps,
+                calculate_confidence=False,
+                seed=snapshot_seed,
+            )
+            step_structures.append(
+                build_complex(sampled["inputs"], sampled["output"]).to_pdb_string()
+            )
+        del sampled
+    if run_steps < steps:
+        # Early trajectories have no confidence-based sequence selection yet.
+        # Return their optimization snapshots without final critic evaluation.
+        return sequences, trajectory, [], tuple(trace), tuple(step_structures)
     assert all(seq != "" for seq in best_sequences)
 
     critic_results: list[dict] = []
@@ -520,6 +605,8 @@ class ESMFold2Design:
         sampling_steps: int = SAMPLING_STEPS,
         confidence_sampling_steps: int = CONFIDENCE_SAMPLING_STEPS,
         log_step_structures: bool = False,
+        stop_after_steps: int | None = None,
+        snapshot_sampling_steps: int | None = None,
     ) -> tuple[
         list[str],
         Trajectory,
@@ -544,4 +631,6 @@ class ESMFold2Design:
             sampling_steps=sampling_steps,
             confidence_sampling_steps=confidence_sampling_steps,
             log_step_structures=log_step_structures,
+            stop_after_steps=stop_after_steps,
+            snapshot_sampling_steps=snapshot_sampling_steps,
         )

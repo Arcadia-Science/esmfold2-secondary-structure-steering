@@ -1,0 +1,32 @@
+/* Mark the molecular viewer's scroll-capture area without shifting the layout. */
+#fig-scene [id^="3dmolviewer_"]::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 11;
+  box-sizing: border-box;
+  border: 2px solid rgb(72 75 80 / 25%);
+  pointer-events: none;
+  visibility: hidden;
+}
+
+#fig-scene [id^="3dmolviewer_"]::after {
+  content: "Scroll to zoom · Move pointer outside to scroll the page";
+  position: absolute;
+  bottom: 10px;
+  left: 10px;
+  right: 10px;
+  z-index: 10;
+  padding: 5px 8px;
+  background: rgb(254 247 241 / 95%);
+  color: #484b50;
+  font-size: 0.8rem;
+  text-align: center;
+  pointer-events: none;
+  visibility: hidden;
+}
+
+#fig-scene [id^="3dmolviewer_"]:hover::before,
+#fig-scene [id^="3dmolviewer_"]:hover::after {
+  visibility: visible;
+}

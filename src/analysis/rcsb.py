@@ -1,32 +1,8 @@
-"""Building the natural binder reference set from the RCSB, from scratch.
+"""Measure the natural reference from frozen search hits, entry metadata and CIFs.
 
-Question 1 needs something for the designs to be helix-rich *relative to*, and
-the right comparator is a protein known to bind a partner: the small chain of a
-natural heterodimer, solved in complex. This module assembles that set.
-
-It is library code rather than a script on purpose. The set is an input to the
-publication, so how it was built has to be readable and runnable from the same
-place the numbers are used, and it has to measure secondary structure through
-:mod:`analysis.secondary_structure` like everything else here rather than
-through a private copy of DSSP.
-
-Reproducibility over time is the awkward part, because the PDB grows. Two
-things are pinned:
-
-- ``SNAPSHOT_RELEASE_DATE`` caps the query by initial release date, so a run in
-  a year sees the same entries a run today sees.
-- The exact query body is written to ``data/reference`` beside the tables, so
-  what was asked is recoverable even if this code later changes.
-
-One thing cannot be pinned. The 30% sequence-identity clusters are computed by
-the RCSB over the whole current PDB and are recomputed as it grows, so which
-entity represents a cluster can change even when the candidate set does not.
-A rebuild is therefore expected to reproduce the *distribution* rather than the
-exact row set, which is the same standard the design campaigns are held to.
-
-Building is slow rather than expensive: a few thousand HTTP requests, a few
-thousand mmCIF downloads, and a solvent-accessible-surface calculation per
-entry. Budget tens of minutes. Nothing here needs a GPU.
+Inputs are retained locally and archived. A live search is needed only to create
+new inputs; its release-date cutoff alone cannot freeze RCSB cluster membership.
+DSSP, interfaces, exclusions and summaries are recalculated on every build.
 """
 
 from __future__ import annotations
@@ -36,7 +12,7 @@ import json
 import time
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 import biotite.structure as struc
@@ -45,6 +21,7 @@ import numpy as np
 import pandas as pd
 
 from analysis import paths, secondary_structure
+from analysis.parallel import DEFAULT_WORKERS, starmap, validate_workers
 
 SEARCH_URL = "https://search.rcsb.org/rcsbsearch/v2/query"
 GRAPHQL_URL = "https://data.rcsb.org/graphql"
@@ -300,11 +277,20 @@ def parse_entity(pdb_id: str, entity: dict[str, object]) -> EntityMeta:
     )
 
 
+ENTRY_METADATA = "natural_binder_entries.json"
+
+
 def fetch_entries(pdb_ids: list[str], progress: bool = True) -> dict[str, EntryMeta]:
     """Entry and entity metadata for every entry, in GraphQL batches."""
-    entries: dict[str, EntryMeta] = {}
-    for start in range(0, len(pdb_ids), GRAPHQL_BATCH):
-        ids = pdb_ids[start : start + GRAPHQL_BATCH]
+    recorded = paths.reference_table(ENTRY_METADATA)
+    saved = json.loads(recorded.read_text()) if recorded.is_file() else {}
+    entries = {
+        key: EntryMeta(**{**value, "entities": tuple(EntityMeta(**e) for e in value["entities"])})
+        for key, value in saved.items()
+    }
+    missing = sorted(set(pdb_ids) - entries.keys())
+    for start in range(0, len(missing), GRAPHQL_BATCH):
+        ids = missing[start : start + GRAPHQL_BATCH]
         payload = post_json(GRAPHQL_URL, {"query": GRAPHQL_TEMPLATE, "variables": {"ids": ids}})
         for entry in payload["data"]["entries"]:
             pdb_id = str(entry["rcsb_id"])
@@ -324,7 +310,10 @@ def fetch_entries(pdb_ids: list[str], progress: bool = True) -> dict[str, EntryM
         if progress:
             done = min(start + GRAPHQL_BATCH, len(pdb_ids))
             print(f"  metadata {done}/{len(pdb_ids)}", flush=True)
-    return entries
+    if missing:
+        recorded.parent.mkdir(parents=True, exist_ok=True)
+        recorded.write_text(json.dumps({k: asdict(v) for k, v in entries.items()}, indent=2) + "\n")
+    return {key: entries[key] for key in pdb_ids}
 
 
 def download(pdb_id: str) -> Path:
@@ -540,6 +529,13 @@ def search_hits(progress: bool = True) -> tuple[list[str], set[str], int]:
             f"representatives of {n_clusters} clusters"
         )
     recorded.parent.mkdir(parents=True, exist_ok=True)
+    (paths.REFERENCE / "natural_binder_query.json").write_text(
+        json.dumps(search_body(True), indent=2) + "\n"
+    )
+    (paths.REFERENCE / "natural_binder_query_all_hits.json").write_text(
+        json.dumps(search_body(False), indent=2) + "\n"
+    )
+
     recorded.write_text(
         json.dumps(
             {
@@ -555,24 +551,23 @@ def search_hits(progress: bool = True) -> tuple[list[str], set[str], int]:
     return hits, representatives, n_clusters
 
 
-def build(limit: int = 0, progress: bool = True) -> pd.DataFrame:
-    """Build the reference set from the RCSB and write it to ``data/reference``.
+def build(
+    limit: int = 0,
+    progress: bool = True,
+    *,
+    include_excluded: bool = False,
+    workers: int = DEFAULT_WORKERS,
+) -> pd.DataFrame:
+    """Recalculate reference measurements, returning results without caching them.
 
-    Writes the composition table the notebook reads, the full pair table
-    including everything excluded, the two query bodies, and a counts record
-    of what each filter removed. Returns the composition table.
-
-    ``limit`` caps the number of cluster representatives, for checking the
-    pipeline end to end without measuring a few thousand structures.
+    ``limit`` selects a small subset for development. ``include_excluded``
+    returns the full pair table, with selection flags, instead of retained pairs.
+    Frozen search and entry metadata and downloaded CIFs are preserved as inputs.
+    Measurements use spawned processes, including from notebooks; ``workers=1``
+    runs serially. Downloads use their separate thread pool before measurements.
     """
+    validate_workers(workers)
     paths.REFERENCE.mkdir(parents=True, exist_ok=True)
-    (paths.REFERENCE / "natural_binder_query.json").write_text(
-        json.dumps(search_body(True), indent=2) + "\n"
-    )
-    (paths.REFERENCE / "natural_binder_query_all_hits.json").write_text(
-        json.dumps(search_body(False), indent=2) + "\n"
-    )
-
     hits, representatives, n_clusters = search_hits(progress=progress)
 
     if limit:
@@ -597,7 +592,8 @@ def build(limit: int = 0, progress: bool = True) -> pd.DataFrame:
     failures: dict[str, str] = {
         f"{pdb_id}_download": error for pdb_id, error in download_failures.items()
     }
-    for index, (pdb_id, group) in enumerate(to_measure.groupby("pdb_id", sort=True), start=1):
+    jobs = []
+    for pdb_id, group in to_measure.groupby("pdb_id", sort=True):
         if pdb_id not in found:
             continue
         by_id = {entity.entity_id: entity for entity in entries[pdb_id].entities}
@@ -605,7 +601,8 @@ def build(limit: int = 0, progress: bool = True) -> pd.DataFrame:
             (by_id[str(record["binder_entity_id"])], by_id[str(record["target_entity_id"])])
             for record in group.to_dict("records")
         )
-        result = measure_entry(str(pdb_id), found[pdb_id], entry_pairs)
+        jobs.append((str(pdb_id), found[pdb_id], entry_pairs))
+    for index, result in enumerate(starmap(measure_entry, jobs, workers=workers), start=1):
         rows.extend(result.rows)
         failures.update(result.failures)
         if progress and index % 200 == 0:
@@ -639,8 +636,6 @@ def build(limit: int = 0, progress: bool = True) -> pd.DataFrame:
     pairs = pairs.sort_values("binder_entity_id").reset_index(drop=True)
 
     table = pairs[pairs["in_reference_set"] == 1].reset_index(drop=True)
-    pairs.to_csv(paths.reference_table("natural_binder_pairs.csv"), index=False)
-    table.to_csv(paths.reference_table("natural_binder_composition.csv"), index=False)
 
     counts = {
         "snapshot_release_date": SNAPSHOT_RELEASE_DATE,
@@ -667,12 +662,6 @@ def build(limit: int = 0, progress: bool = True) -> pd.DataFrame:
         "final_reference_pairs": int(len(table)),
         "measurement_failures": len(failures),
     }
-    (paths.REFERENCE / "natural_binder_build_counts.json").write_text(
-        json.dumps(counts, indent=2) + "\n"
-    )
-    (paths.REFERENCE / "natural_binder_build_failures.json").write_text(
-        json.dumps(failures, indent=2) + "\n"
-    )
     if progress:
         print(json.dumps(counts, indent=2))
-    return table
+    return pairs if include_excluded else table

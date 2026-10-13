@@ -20,6 +20,8 @@ The terms themselves, and the arithmetic behind them, are in
 from __future__ import annotations
 from dataclasses import dataclass
 
+import torch
+
 from analysis.steering import TERM_SPECS, term
 
 
@@ -49,8 +51,11 @@ class LossSchedule:
 
     key: str
     waypoints: tuple[Waypoint, ...]
+    base_structure_onset: int = 0
 
     def __post_init__(self) -> None:
+        if self.base_structure_onset < 0:
+            raise ValueError("base_structure_onset must be >= 0")
         if not self.waypoints:
             raise ValueError("a schedule needs at least one waypoint")
         steps = [waypoint.step for waypoint in self.waypoints]
@@ -72,6 +77,24 @@ class LossSchedule:
             active.update(waypoint.weights)
         return active
 
+    def base_structure_weight_at(self, step: int) -> float:
+        """Gate the cookbook structural objective independently of steering."""
+        if step < 0:
+            raise ValueError(f"step must be >= 0, got {step}")
+        return float(step >= self.base_structure_onset)
+
+    def structural_objective(
+        self, base_loss: torch.Tensor, steering_loss: torch.Tensor, step: int
+    ) -> torch.Tensor:
+        """Combine active losses before the existing gradient normalization.
+
+        Withholding the base term removes its gradient entirely. The default
+        branch is the original sum, preserving existing campaign behavior.
+        """
+        if self.base_structure_weight_at(step) == 0:
+            return steering_loss
+        return base_loss + steering_loss
+
     def summary(self) -> str:
         """One line describing the schedule, for tables and protocol records."""
         if not any(waypoint.weights for waypoint in self.waypoints):
@@ -87,11 +110,13 @@ class LossSchedule:
                 spans.append(f"{named} for steps {waypoint.step}-{until}")
             else:
                 spans.append(f"{named} from step {waypoint.step} on")
+        if self.base_structure_onset:
+            spans.append(f"base structural objective from step {self.base_structure_onset} on")
         return "; ".join(spans)
 
     def to_dict(self) -> dict[str, object]:
         """A JSON-friendly record of the schedule, stored with each campaign."""
-        return {
+        record = {
             "key": self.key,
             "summary": self.summary(),
             "waypoints": [
@@ -99,6 +124,9 @@ class LossSchedule:
                 for waypoint in self.waypoints
             ],
         }
+        if self.base_structure_onset:
+            record["base_structure_onset"] = self.base_structure_onset
+        return record
 
 
 VANILLA = LossSchedule(key="vanilla", waypoints=(Waypoint(step=0, weights={}),))
