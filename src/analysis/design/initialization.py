@@ -248,6 +248,7 @@ def controls(model, audit, controls: list[dict], protocol_id: str, archive) -> b
 
 
 def design_pair(driver, audit, sources, bundle: dict, protocol: dict, archive) -> bytes:
+    """Run all prior arms with one shared initial sequence and atom-feature tensor set."""
     import pandas as pd
     import torch
     from esm.models.esmfold2.constants import PROTEIN_3TO1
@@ -274,7 +275,8 @@ def design_pair(driver, audit, sources, bundle: dict, protocol: dict, archive) -
     order20 = [PROTEIN_3TO1[t] for t in TOKENS[2:22]]
     temperature0 = 0.01 + 0.99 * 0.5 * (1 + math.cos(math.pi / protocol["annealing_horizon"]))
     probabilities, logits = {}, {}
-    for arm in ("helix", "sheet"):
+    arms = protocol["arms"]
+    for arm in arms:
         init, p20 = prior_logits(
             protocol["priors"][arm],
             bundle["sequence"],
@@ -288,23 +290,30 @@ def design_pair(driver, audit, sources, bundle: dict, protocol: dict, archive) -
         if supplied.shape != expected.shape or not torch.equal(supplied, expected):
             raise ValueError("Paired probabilities differ from the prepared initialization rule")
         probabilities[arm], logits[arm] = p20, init
-    assert torch.equal(probabilities["helix"].argmax(-1), probabilities["sheet"].argmax(-1))
+    assert all(
+        torch.equal(probabilities[arms[0]].argmax(-1), probabilities[arm].argmax(-1))
+        for arm in arms[1:]
+    )
     target = protocol["target_sequence"]
-    prepared = prepare_folding_inputs(target, probabilities["helix"].cuda(), seed=72000 + index)
+    prepared = prepare_folding_inputs(target, probabilities[arms[0]].cuda(), seed=72000 + index)
     assert prepared["seq_list"] == [target + "|" + bundle["sequence"]]
     cpu_features = {k: v.detach().cpu().clone() for k, v in prepared["inputs"].items()}
     torch.save(
         {
             "logits": logits,
             "features": cpu_features,
-            "bundle": {k: v for k, v in bundle.items() if k not in {"helix", "sheet"}},
+            "bundle": {k: v for k, v in bundle.items() if k not in arms},
             "model_aa_order": order20,
             "temperature0": temperature0,
         },
         folder / "initialization.pt",
     )
     archive.commit()
-    arm_order = ["helix", "sheet"] if index % 2 == 0 else ["sheet", "helix"]
+    # Cycle positions and reverse direction to balance execution order across starts.
+    offset = index % len(arms)
+    arm_order = arms[offset:] + arms[:offset]
+    if index // len(arms) % 2:
+        arm_order.reverse()
     n_steps = protocol["updates"]
     for arm in arm_order:
         dest = folder / arm

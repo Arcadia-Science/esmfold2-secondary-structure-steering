@@ -84,7 +84,8 @@ def validate(tables: dict[str, pd.DataFrame]) -> None:
     lengths = designs.pivot(index="seed", columns="arm", values="length")
     assert lengths.nunique(axis=1).eq(1).all()
     short = tables["short-trajectories"]
-    assert set(short.arm) == {"helix", "sheet"} and short.geometry_pass.all()
+    assert set(short.arm) == set(INITIALIZATION_SPECS["short"]["arms"])
+    assert short.geometry_pass.all()
     assert not short.duplicated(["arm", "pair", "step"]).any()
     for _, frame in short.groupby("arm"):
         assert (
@@ -157,7 +158,7 @@ def report() -> dict:
 
 
 def short_trajectories(frame: pd.DataFrame, means: pd.DataFrame | None = None) -> plt.Figure:
-    """Individual trajectories and means for five matched inputs per prior."""
+    """Individual trajectories and means for matched inputs across all three priors."""
     if means is None:
         means = frame.groupby(["arm", "step"])[["helix", "sheet", "helix_proxy", "entropy"]].mean()
     with plt.rc_context({"font.size": 10, "axes.labelsize": 10, "axes.titlesize": 11}):
@@ -170,6 +171,7 @@ def short_trajectories(frame: pd.DataFrame, means: pd.DataFrame | None = None) -
         ]
         for ax, (metric, title) in zip(axes.flat, specs, strict=True):
             for arm, label, color, style in [
+                ("uniform", "Uniform", figures.BASELINE_COLOR, ":"),
                 ("helix", "Helix prior", figures.HELIX_COLOR, "-"),
                 ("sheet", "Sheet prior", figures.LOOP_COLOR, "--"),
             ]:
@@ -179,7 +181,10 @@ def short_trajectories(frame: pd.DataFrame, means: pd.DataFrame | None = None) -
                 mean = means.loc[arm, metric]
                 ax.plot(mean.index, mean, label=label, color=color, ls=style, lw=2.3)
             ax.set(xlabel="Optimization step (before update)", ylabel=title, xlim=(0, 39))
-            ax.set_ylim((3.2, 4.0) if metric == "entropy" else (-0.02, 1.02))
+            if metric == "entropy":
+                ax.set_ylim(min(3.2, frame.entropy.min() - 0.05), np.log2(len(AA)) + 0.05)
+            else:
+                ax.set_ylim(-0.02, 1.02)
             ax.spines[["top", "right"]].set_visible(False)
         axes[0, 0].legend(frameon=False, fontsize=9)
         return fig
@@ -322,7 +327,7 @@ def measure_short_trajectories(root: Path) -> pd.DataFrame:
     rows = []
     for pair in range(settings["pairs"]):
         paired = []
-        for arm in ("helix", "sheet"):
+        for arm in settings["arms"]:
             folder = root / f"runs/pair{pair:02d}" / arm
             steps = trace(folder / "step_trace.csv", settings["updates"])
             paired.append(steps)
@@ -340,10 +345,10 @@ def measure_short_trajectories(root: Path) -> pd.DataFrame:
                         "entropy": record["sequence entropy (bits)"],
                     }
                 )
-        if paired[0].loc[0, "binder sequence"] != paired[1].loc[0, "binder sequence"]:
+        if len({steps.loc[0, "binder sequence"] for steps in paired}) != 1:
             raise ValueError(f"Unmatched initial sequences for pair {pair}")
         for column in ("inversion model", "temperature (0-1)"):
-            if not paired[0][column].equals(paired[1][column]):
+            if any(not paired[0][column].equals(steps[column]) for steps in paired[1:]):
                 raise ValueError(f"Unmatched {column} for pair {pair}")
     return pd.DataFrame(rows)
 
@@ -520,7 +525,7 @@ def prepare_inputs(root: Path, experiment: str, temperature: float) -> Path:
     elif experiment == "short":
         bundles = paired_inputs()
         for item in bundles:
-            for arm in ("helix", "sheet"):
+            for arm in protocol["arms"]:
                 matched_probabilities(
                     prior[arm],
                     item["sequence"],
@@ -656,7 +661,7 @@ def prepared_jobs(root: Path, experiment: str, temperature: float) -> tuple[dict
     if experiment == "full":
         protocol = {**protocol, "sheet_pdf": prior["sheet"]}
     else:
-        protocol = {**protocol, "priors": {arm: prior[arm] for arm in ("helix", "sheet")}}
+        protocol = {**protocol, "priors": {arm: prior[arm] for arm in protocol["arms"]}}
     for item in read(inputs):
         if experiment == "short":
             bundle = {
@@ -668,7 +673,7 @@ def prepared_jobs(root: Path, experiment: str, temperature: float) -> tuple[dict
                         temperature=temperature,
                         margin=protocol["probability_margin"],
                     ).tolist()
-                    for arm in ("helix", "sheet")
+                    for arm in protocol["arms"]
                 },
             }
             name, method = f"runs/pair{item['pair']:02d}", "design_pair"

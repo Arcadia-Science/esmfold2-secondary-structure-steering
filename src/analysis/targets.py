@@ -347,7 +347,8 @@ INITIALIZATION_SPECS = {
     },
     "short": {
         "binder_length": 120,
-        "pairs": 5,
+        "pairs": 10,
+        "arms": ["uniform", "helix", "sheet"],
         "updates": 40,
         "annealing_horizon": SGD_STEPS,
         "probability_margin": INITIALIZATION_MARGIN,

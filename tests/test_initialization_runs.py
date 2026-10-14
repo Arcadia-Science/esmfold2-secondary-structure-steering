@@ -27,6 +27,7 @@ def prior():
     sheet = np.linspace(3, 1, 19)
     return {
         "amino_acid_order": AA,
+        "uniform": [1 / 19] * 19,
         "helix": (helix / helix.sum()).tolist(),
         "sheet": (sheet / sheet.sum()).tolist(),
     }
@@ -49,14 +50,16 @@ def test_temperature_preserves_argmax_and_increases_softness(prior, arm):
 @pytest.mark.parametrize("temperature", [0.5, 1, 1.5, 4])
 def test_paired_priors_have_identical_discrete_inputs(prior, temperature):
     bundles = paired_inputs()
-    assert len(bundles) == 5
+    assert len(bundles) == 10
+    assert len({bundle["sequence"] for bundle in bundles}) == 10
     for bundle in bundles:
-        h, e = (
+        u, h, e = (
             matched_probabilities(prior[a], bundle["sequence"], temperature=temperature)
-            for a in ("helix", "sheet")
+            for a in ("uniform", "helix", "sheet")
         )
+        np.testing.assert_array_equal(u.argmax(-1), h.argmax(-1))
         np.testing.assert_array_equal(h.argmax(-1), e.argmax(-1))
-        assert h.shape == e.shape == (120, 19)
+        assert u.shape == h.shape == e.shape == (120, 19)
         assert "".join(AA[i] for i in h.argmax(-1)) == bundle["sequence"]
         # Each prior gets its own adjustment, even with identical hard identities.
         assert not np.allclose(
@@ -65,7 +68,7 @@ def test_paired_priors_have_identical_discrete_inputs(prior, temperature):
         )
 
 
-@pytest.mark.parametrize("arm", ["helix", "sheet"])
+@pytest.mark.parametrize("arm", ["uniform", "helix", "sheet"])
 @pytest.mark.parametrize("temperature", [0.5, 1, 1.5, 2, 4, 1e8])
 @pytest.mark.parametrize("margin", [0.0001, 0.001, 0.01])
 def test_boost_is_minimal_and_already_favored_identity_is_unchanged(
@@ -178,7 +181,7 @@ def test_too_small_margin_is_rejected():
         matched_probabilities(np.full(19, 1 / 19), "I", margin=1e-30)
 
 
-@pytest.mark.parametrize("arm", ["helix", "sheet"])
+@pytest.mark.parametrize("arm", ["uniform", "helix", "sheet"])
 @pytest.mark.parametrize("temperature", [0.5, 1, 1.5, 2, 4])
 def test_worker_logit_conversion_preserves_probabilities_and_identities(prior, arm, temperature):
     module = Path(__file__).resolve().parents[1] / "src/analysis/design/initialization.py"
@@ -221,7 +224,7 @@ def test_prepare_full_temperatures_in_checkout_without_exploratory(tmp_path, mon
             initial.to_parquet(folder / name)
     root = tmp_path / "runs"
     short = workflow.prepare_inputs(root, "short", 1)
-    assert len(workflow.read(short / "inputs.json")) == 5
+    assert len(workflow.read(short / "inputs.json")) == 10
     assert workflow.protocol(short, "short")["probability_margin"] == 0.001
     t1 = workflow.prepare_inputs(root, "full", 1)
     inputs = workflow.read(t1 / "inputs.json")
@@ -338,7 +341,7 @@ def test_shared_cli_prepares_submits_and_collects_initialization(
     for verb in ["prepare", "spawn", "spawn", "collect", "collect"]:
         result = runner.invoke(campaign.app, [verb, *args])
         assert result.exit_code == 0, (result.output, result.exception)
-    expected = {"softness": 11, "short": 5, "full": 30}[experiment]
+    expected = {"softness": 11, "short": 10, "full": 30}[experiment]
     assert len(submitted) == expected
     expected_class = "FixedInputModal" if experiment == "softness" else campaign.REMOTE_CLASS
     assert all(item == (modal_app.APP_NAME, expected_class) for item in requested)
@@ -363,11 +366,13 @@ def test_shared_cli_prepares_submits_and_collects_initialization(
             for _, kwargs in submitted
         )
     if experiment == "short":
+        assert protocol["arms"] == ["uniform", "helix", "sheet"]
         for method, kwargs in submitted:
             assert method == "design_pair"
-            h, e = (np.asarray(kwargs["bundle"][arm]) for arm in ("helix", "sheet"))
+            u, h, e = (np.asarray(kwargs["bundle"][arm]) for arm in protocol["arms"])
+            np.testing.assert_array_equal(u.argmax(-1), h.argmax(-1))
             np.testing.assert_array_equal(h.argmax(-1), e.argmax(-1))
-            for arm in ("helix", "sheet"):
+            for arm in protocol["arms"]:
                 np.testing.assert_allclose(
                     kwargs["bundle"][arm],
                     matched_probabilities(
@@ -382,6 +387,49 @@ def test_shared_cli_prepares_submits_and_collects_initialization(
         assert all(kwargs["protocol"]["sheet_pdf"] == prior["sheet"] for _, kwargs in submitted)
     else:
         assert [method for method, _ in submitted] == ["screen"] * 10 + ["controls"]
+
+
+@pytest.mark.parametrize(
+    "mismatch", [None, "binder sequence", "inversion model", "temperature (0-1)"]
+)
+def test_short_measurements_include_uniform_and_validate_all_arms(tmp_path, monkeypatch, mismatch):
+    settings = {
+        **targets.INITIALIZATION_SPECS["short"],
+        "pairs": 1,
+        "updates": 2,
+    }
+    monkeypatch.setitem(targets.INITIALIZATION_SPECS, "short", settings)
+    workflow.save(tmp_path / "protocol.json", {**settings, "initialization_temperature": 1})
+    monkeypatch.setattr(
+        workflow,
+        "measure",
+        lambda *args: {"helix": 0.2, "sheet": 0.3, "coil": 0.5, "geometry_pass": True},
+    )
+    for arm in settings["arms"]:
+        folder = tmp_path / "runs/pair00" / arm
+        folder.mkdir(parents=True)
+        frame = pd.DataFrame(
+            {
+                "step (index)": [0, 1],
+                "binder sequence": ["AI", "IV"],
+                "steering_loss (dimensionless)": 0.0,
+                "inversion model": ["model1", "model2"],
+                "temperature (0-1)": [1.0, 0.99],
+                "helix_mean (0-1)": [0.2, 0.3],
+                "sequence entropy (bits)": [4.24, 4.2],
+            }
+        )
+        if arm == "sheet" and mismatch is not None:
+            frame.loc[0, mismatch] = 0.5 if mismatch == "temperature (0-1)" else "DIFFERENT"
+        frame.to_csv(folder / "step_trace.csv", index=False)
+    if mismatch is not None:
+        with pytest.raises(ValueError, match="Unmatched"):
+            workflow.measure_short_trajectories(tmp_path)
+    else:
+        measured = workflow.measure_short_trajectories(tmp_path)
+        assert len(measured) == 6
+        assert set(measured.arm) == {"uniform", "helix", "sheet"}
+        assert measured.groupby("arm").step.apply(list).tolist() == [[0, 1]] * 3
 
 
 def test_prepared_prior_change_is_rejected_before_submission(tmp_path, monkeypatch, prior):

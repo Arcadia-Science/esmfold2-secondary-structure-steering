@@ -47,7 +47,11 @@ python -m analysis.campaign collect --target pdl1_igv --arm vanilla
 
 Initialization experiments use the same campaign CLI and deployment. They first
 prepare matched inputs. `softness` performs fixed-input forwards, `short` runs
-40-update matched helix/sheet trajectories, and `full` runs 150-update designs:
+40-update matched uniform/helix/sheet trajectories, and `full` runs 150-update designs.
+The short experiment uses 10 shared starting sequences of length 120: each job
+runs all three arms with identical initial atom features, for 30 trajectories.
+Its uniform control uses the same minimum-boost rule as the empirical priors,
+rather than the default initializer's random score perturbations.
 
 ```bash
 python -m analysis.campaign prepare --experiment short

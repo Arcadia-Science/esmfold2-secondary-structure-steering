@@ -104,7 +104,7 @@ def validate_initialization_settings(protocol: dict) -> None:
 
 
 def paired_inputs() -> list[dict]:
-    """The five fixed-length matched inputs used for the short trajectories."""
+    """Fixed-length starting sequences shared by every short-trajectory arm."""
     bundles = []
     settings = INITIALIZATION_SPECS["short"]
     for pair in range(settings["pairs"]):
