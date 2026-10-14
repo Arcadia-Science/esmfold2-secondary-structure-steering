@@ -32,6 +32,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from matplotlib.colors import to_hex, to_rgba
+from matplotlib.patches import Patch
 from matplotlib.ticker import MaxNLocator
 
 apc.mpl.setup()
@@ -1685,3 +1686,52 @@ def schedule_trace_panels(medians, scans, drawn_steps) -> list[plt.Figure]:
                 )
             )
     return panels
+
+
+def initialization_prior(
+    prior: pd.Series, initialized: pd.Series, state: str, chosen: str, *, legend: bool = False
+) -> plt.Figure:
+    """Compare supplied prior and initialized probabilities at one sequence position."""
+    amino_acids = list("ACDEFGHIKLMNPQRSTVWY")
+    prior = prior.reindex(amino_acids, fill_value=0)
+    initialized = initialized.reindex(amino_acids, fill_value=0)
+    color = {"uniform": LOOP_COLOR, "helix": HELIX_COLOR, "sheet": SHEET_COLOR}[state]
+    selected_color = "#493466"
+    colors = [selected_color if aa == chosen else color for aa in amino_acids]
+    outline_colors = [selected_color if aa == chosen else ERROR_COLOR for aa in amino_acids]
+    positions = np.arange(len(amino_acids))
+    offset, width = 0.2, 0.36
+    figure, axis = plt.subplots(figsize=(8, 2.6))
+    axis.bar(
+        positions - offset, 100 * prior, width=width, facecolor="none",
+        edgecolor=outline_colors, linewidth=1, zorder=3,
+    )
+    axis.bar(positions + offset, 100 * initialized, width=width, color=colors, zorder=3)
+    axis.set(
+        xlim=(-0.7, 19.7),
+        ylim=(0, 1.18 * 100 * max(prior.max(), initialized.max())),
+        ylabel="Probability (%)",
+    )
+    axis.set_xticks(positions, amino_acids)
+    axis.yaxis.set_major_locator(MaxNLocator(nbins=4))
+    axis.spines[["top", "right"]].set_visible(False)
+    axis.tick_params(axis="both", length=0, pad=5)
+    for tick, aa in zip(axis.get_xticklabels(), amino_acids, strict=True):
+        if aa == chosen:
+            tick.set_color(selected_color)
+            tick.set_fontweight("bold")
+        elif aa == "C":
+            tick.set_color(BASELINE_COLOR)
+    axis.annotate(
+        f"{100 * initialized[chosen]:.2f}%",
+        (amino_acids.index(chosen) + offset, 100 * initialized[chosen]),
+        xytext=(0, 5), textcoords="offset points", ha="center",
+        color=selected_color,
+    )
+    if legend:
+        axis.legend(
+            handles=[Patch(facecolor=selected_color, label="Chosen")],
+            loc="upper right", frameon=False,
+        )
+    figure.tight_layout()
+    return figure
