@@ -66,7 +66,10 @@ def test_default_preserves_soft_conditioning_and_gradients(folding):
     assert logits.grad is not None and logits.grad.abs().sum() > 0
 
 
-def test_minimum_boost_initialization_reaches_model_with_matching_discrete_features(folding):
+@pytest.mark.parametrize("temperature", [1, 1.5, 4])
+def test_minimum_boost_initialization_reaches_model_with_matching_discrete_features(
+    folding, temperature
+):
     from analysis.priors import AA, matched_probabilities
     from analysis.targets import INITIALIZATION_MARGIN
 
@@ -76,10 +79,17 @@ def test_minimum_boost_initialization_reaches_model_with_matching_discrete_featu
     q /= q.sum()
     sequence = "IV" + "".join(AA)
     order = list("ACDEFGHIKLMNPQRSTVWY")
-    temperature = 0.01 + 0.99 * 0.5 * (1 + math.cos(math.pi / 150))
-    logits, _ = prior_logits(q, sequence, order, temperature, margin=INITIALIZATION_MARGIN)
+    optimization_temperature = 0.01 + 0.99 * 0.5 * (1 + math.cos(math.pi / 150))
+    logits, _ = prior_logits(
+        q,
+        sequence,
+        order,
+        optimization_temperature,
+        temperature=temperature,
+        margin=INITIALIZATION_MARGIN,
+    )
     logits.requires_grad_(True)
-    design = (logits / temperature).softmax(-1)
+    design = (logits / optimization_temperature).softmax(-1)
     target = F.one_hot(torch.tensor([[2, 3]]), 33).float()
     received = {}
 
@@ -93,7 +103,7 @@ def test_minimum_boost_initialization_reaches_model_with_matching_discrete_featu
     assert torch.allclose(soft_binder, design[0])
     np.testing.assert_allclose(
         soft_binder[:, [order.index(aa) for aa in AA]].detach(),
-        matched_probabilities(q, sequence),
+        matched_probabilities(q, sequence, temperature=temperature),
         atol=1e-7,
         rtol=1e-6,
     )

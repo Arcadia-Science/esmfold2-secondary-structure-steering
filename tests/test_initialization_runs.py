@@ -16,7 +16,7 @@ from analysis.priors import (
     matched_probabilities,
     minimum_boosts,
     paired_inputs,
-    tempered_sheet,
+    tempered_prior,
 )
 
 
@@ -32,66 +32,111 @@ def prior():
     }
 
 
-def test_temperature_preserves_argmax_and_increases_softness(prior):
+@pytest.mark.parametrize("arm", ["helix", "sheet"])
+def test_temperature_preserves_argmax_and_increases_softness(prior, arm):
     entropy, boosts = [], []
-    for temperature in (1, 2, 4):
-        q = tempered_sheet(prior, temperature)
-        p = matched_probabilities(q, "".join(AA))
+    for temperature in (0.5, 1, 1.5, 2, 4, 10):
+        p = matched_probabilities(prior[arm], "".join(AA), temperature=temperature)
         np.testing.assert_array_equal(p.argmax(-1), np.arange(19))
         np.testing.assert_allclose(p.sum(-1), 1)
         assert (p > 0).all()
         entropy.append(float(-(p * np.log2(p)).sum(-1).mean()))
-        boosts.append(minimum_boosts(q, "".join(AA)).mean())
-    assert entropy[0] < entropy[1] < entropy[2]
-    assert boosts[0] > boosts[1] > boosts[2]
+        boosts.append(minimum_boosts(prior[arm], "".join(AA), temperature=temperature).mean())
+    assert (np.diff(entropy) > 0).all()
+    assert (np.diff(boosts) < 0).all()
 
 
-def test_paired_priors_have_identical_discrete_inputs(prior):
+@pytest.mark.parametrize("temperature", [0.5, 1, 1.5, 4])
+def test_paired_priors_have_identical_discrete_inputs(prior, temperature):
     bundles = paired_inputs()
     assert len(bundles) == 5
     for bundle in bundles:
-        h, e = (matched_probabilities(prior[a], bundle["sequence"]) for a in ("helix", "sheet"))
+        h, e = (
+            matched_probabilities(prior[a], bundle["sequence"], temperature=temperature)
+            for a in ("helix", "sheet")
+        )
         np.testing.assert_array_equal(h.argmax(-1), e.argmax(-1))
         assert h.shape == e.shape == (120, 19)
         assert "".join(AA[i] for i in h.argmax(-1)) == bundle["sequence"]
         # Each prior gets its own adjustment, even with identical hard identities.
         assert not np.allclose(
-            minimum_boosts(prior["helix"], bundle["sequence"]),
-            minimum_boosts(prior["sheet"], bundle["sequence"]),
+            minimum_boosts(prior["helix"], bundle["sequence"], temperature=temperature),
+            minimum_boosts(prior["sheet"], bundle["sequence"], temperature=temperature),
         )
 
 
 @pytest.mark.parametrize("arm", ["helix", "sheet"])
-def test_boost_is_minimal_and_already_favored_identity_is_unchanged(prior, arm):
+@pytest.mark.parametrize("temperature", [0.5, 1, 1.5, 2, 4, 1e8])
+@pytest.mark.parametrize("margin", [0.0001, 0.001, 0.01])
+def test_boost_is_minimal_and_already_favored_identity_is_unchanged(
+    prior, arm, temperature, margin
+):
     q = np.asarray(prior[arm])
-    margin = targets.INITIALIZATION_MARGIN
+    # Independent power/normalization calculation tests the order of operations.
+    qt = q ** (1 / temperature)
+    qt /= qt.sum()
     sequence = "".join(AA)
     original = q.copy()
-    boosts = minimum_boosts(q, sequence)
-    p = matched_probabilities(q, sequence)
+    boosts = minimum_boosts(q, sequence, temperature=temperature, margin=margin)
+    p = matched_probabilities(q, sequence, temperature=temperature, margin=margin)
     np.testing.assert_array_equal(q, original)
     np.testing.assert_allclose(p.sum(-1), 1)
     for i, boost in enumerate(boosts):
         gap = p[i, i] - np.delete(p[i], i).max()
         assert gap >= margin - 1e-14
+        expected_boost = max(0, np.delete(qt, i).max() - qt[i] + margin)
+        assert boost == pytest.approx(expected_boost, abs=1e-14)
+        np.testing.assert_allclose(p[i], qt + boost * (np.eye(19)[i] - 1 / 19), atol=1e-14)
         if boost == 0:
-            np.testing.assert_array_equal(p[i], q)
+            np.testing.assert_allclose(p[i], qt, atol=1e-14)
         else:
             assert gap == pytest.approx(margin)
-            smaller = q + boost / 2 * (np.eye(19)[i] - 1 / 19)
+            smaller_boost = boost - min(boost / 2, 1e-7)
+            smaller = qt + smaller_boost * (np.eye(19)[i] - 1 / 19)
             assert smaller[i] - np.delete(smaller, i).max() < margin
-    assert boosts[q.argmax()] == 0
 
 
-def test_uniform_prior_and_tied_maximum():
+def test_default_temperature_leaves_prior_unchanged(prior):
+    q = np.asarray(prior["helix"])
+    np.testing.assert_array_equal(tempered_prior(q), q)
+    np.testing.assert_array_equal(
+        matched_probabilities(q, "IV"), matched_probabilities(q, "IV", temperature=1)
+    )
+    favored = AA[q.argmax()]
+    assert minimum_boosts(q, favored)[0] == 0
+    np.testing.assert_array_equal(matched_probabilities(q, favored)[0], q)
+
+
+@pytest.mark.parametrize("temperature", [0.5, 1, 1.5, 4, 1e8])
+def test_uniform_prior_and_tied_maximum(temperature):
     q = np.full(19, 1 / 19)
-    p = matched_probabilities(q, "AI")
+    p = matched_probabilities(q, "AI", temperature=temperature)
     assert p[0, AA.index("A")] - p[0, AA.index("I")] == pytest.approx(0.001)
     assert p[1, AA.index("I")] - p[1, AA.index("A")] == pytest.approx(0.001)
     q[[0, 1]] += 0.01
     q[2:] -= 0.02 / 17
-    p = matched_probabilities(q, "A")
+    p = matched_probabilities(q, "A", temperature=temperature)
     assert p[0, 0] - p[0, 1] == pytest.approx(0.001)
+
+
+@pytest.mark.parametrize("temperature", [0, -1, float("nan"), float("inf"), -float("inf")])
+def test_invalid_temperature_is_rejected_before_preparation(tmp_path, prior, temperature):
+    for initialize in (minimum_boosts, matched_probabilities):
+        with pytest.raises(ValueError, match="temperature"):
+            initialize(prior["helix"], "I", temperature=temperature)
+    with pytest.raises(ValueError, match="temperature"):
+        tempered_prior(prior["helix"], temperature)
+    for experiment in ("short", "full"):
+        with pytest.raises(ValueError, match="temperature"):
+            workflow.prepare_inputs(tmp_path, experiment, temperature)
+    assert not list(tmp_path.iterdir())
+
+
+def test_sharp_temperatures_reject_infeasible_inputs(prior):
+    with pytest.raises(ValueError, match="nonpositive"):
+        matched_probabilities(prior["helix"], "A", temperature=0.1)
+    with pytest.raises(ValueError, match="nonpositive"):
+        matched_probabilities(prior["helix"], "A", temperature=1e-300)
 
 
 @pytest.mark.parametrize("margin", [0, -0.001, float("nan"), float("inf")])
@@ -134,21 +179,23 @@ def test_too_small_margin_is_rejected():
 
 
 @pytest.mark.parametrize("arm", ["helix", "sheet"])
-@pytest.mark.parametrize("temperature", [1, 2, 4])
+@pytest.mark.parametrize("temperature", [0.5, 1, 1.5, 2, 4])
 def test_worker_logit_conversion_preserves_probabilities_and_identities(prior, arm, temperature):
     module = Path(__file__).resolve().parents[1] / "src/analysis/design/initialization.py"
     prior_logits = runpy.run_path(str(module))["prior_logits"]
     # Model order differs from the prior order; cysteine is excluded from the prior.
     order = list(reversed("ACDEFGHIKLMNPQRSTVWY"))
     sequence = "".join(AA)
-    q = tempered_sheet({**prior, "sheet": prior[arm]}, temperature)
+    q = prior[arm]
     t0 = 0.01 + 0.99 * 0.5 * (1 + math.cos(math.pi / 150))
-    logits, p = prior_logits(q, sequence, order, t0, margin=targets.INITIALIZATION_MARGIN)
+    logits, p = prior_logits(
+        q, sequence, order, t0, temperature=temperature, margin=targets.INITIALIZATION_MARGIN
+    )
     assert logits.dtype == p.dtype == torch.float32
     recovered = (logits / t0).softmax(-1)
     np.testing.assert_allclose(
         recovered[0, :, [order.index(aa) for aa in AA]],
-        matched_probabilities(q, sequence),
+        matched_probabilities(q, sequence, temperature=temperature),
         atol=1e-7,
         rtol=1e-6,
     )
@@ -185,13 +232,18 @@ def test_prepare_full_temperatures_in_checkout_without_exploratory(tmp_path, mon
             {"bundle": item, "features": {"test": torch.tensor([item["seed"]])}},
             folder / "initialization.pt",
         )
-    for temperature in (2, 4):
+    for temperature in (0.75, 1.5, 2, 4):
         out = workflow.prepare_inputs(root, "full", temperature)
         protocol = workflow.read(out / "protocol.json")
         assert protocol["initialization_temperature"] == temperature
         assert protocol["probability_margin"] == 0.001
         assert "boost" not in protocol and "epsilon" not in protocol
         assert protocol["seeds"] == list(range(30))
+        prepared, jobs = workflow.prepared_jobs(root, "full", temperature)
+        assert prepared["initialization_temperature"] == temperature
+        # Workers receive the original prior so tempering happens exactly once.
+        assert prepared["sheet_pdf"] == prior["sheet"]
+        assert len(jobs) == 30
         for item in workflow.read(out / "inputs.json"):
             blob = (out / "inputs" / f"seed{item['seed']:02d}-features.pt").read_bytes()
             features = torch.load(io.BytesIO(blob), weights_only=True)
@@ -213,9 +265,12 @@ def test_stale_source_prevents_launch_before_any_remote_call(tmp_path, monkeypat
         workflow.prepared_jobs(tmp_path, "short", 1)
 
 
-@pytest.mark.parametrize("experiment", ["softness", "short", "full"])
+@pytest.mark.parametrize(
+    ("experiment", "temperature"),
+    [("softness", 1), ("short", 1), ("short", 1.5), ("full", 1), ("full", 1.5)],
+)
 def test_shared_cli_prepares_submits_and_collects_initialization(
-    tmp_path, monkeypatch, prior, experiment
+    tmp_path, monkeypatch, prior, experiment, temperature
 ):
     import json
     import zipfile
@@ -268,8 +323,18 @@ def test_shared_cli_prepares_submits_and_collects_initialization(
         "from_id",
         lambda _: SimpleNamespace(get=lambda **kwargs: payload.getvalue()),
     )
+    root = tmp_path / "runs"
+    if experiment == "full" and temperature != 1:
+        t1 = workflow.prepare_inputs(root, "full", 1)
+        for item in workflow.read(t1 / "inputs.json"):
+            folder = t1 / f"seed{item['seed']:02d}"
+            folder.mkdir()
+            torch.save(
+                {"bundle": item, "features": {"test": torch.tensor([item["seed"]])}},
+                folder / "initialization.pt",
+            )
     runner = CliRunner()
-    args = ["--experiment", experiment, "--root", str(tmp_path / "runs")]
+    args = ["--experiment", experiment, "--root", str(root), "--temperature", str(temperature)]
     for verb in ["prepare", "spawn", "spawn", "collect", "collect"]:
         result = runner.invoke(campaign.app, [verb, *args])
         assert result.exit_code == 0, (result.output, result.exception)
@@ -283,7 +348,7 @@ def test_shared_cli_prepares_submits_and_collects_initialization(
             item == {"timeout": 7200, "max_containers": 10 if experiment == "full" else 5}
             for item in options
         )
-    directory = workflow.experiment_dir(tmp_path / "runs", experiment, 1)
+    directory = workflow.experiment_dir(root, experiment, temperature)
     frame = pd.read_csv(directory / "manifest.csv")
     assert len(frame) == expected
     assert not (directory / "calls.json").exists()
@@ -291,6 +356,12 @@ def test_shared_cli_prepares_submits_and_collects_initialization(
         assert (directory / name / "model.pdb").read_text() == "model output"
     protocol = json.loads((directory / "protocol.json").read_text())
     assert protocol["app"] == modal_app.APP_NAME
+    if experiment != "softness":
+        assert protocol["initialization_temperature"] == temperature
+        assert all(
+            kwargs["protocol"]["initialization_temperature"] == temperature
+            for _, kwargs in submitted
+        )
     if experiment == "short":
         for method, kwargs in submitted:
             assert method == "design_pair"
@@ -299,13 +370,16 @@ def test_shared_cli_prepares_submits_and_collects_initialization(
             for arm in ("helix", "sheet"):
                 np.testing.assert_allclose(
                     kwargs["bundle"][arm],
-                    matched_probabilities(prior[arm], kwargs["bundle"]["sequence"]),
+                    matched_probabilities(
+                        prior[arm], kwargs["bundle"]["sequence"], temperature=temperature
+                    ),
                 )
                 assert kwargs["protocol"]["priors"][arm] == prior[arm]
     elif experiment == "full":
         assert all(method == "design_prior" for method, _ in submitted)
         assert all(kwargs["protocol"]["steps"] == 150 for _, kwargs in submitted)
         assert all(kwargs["protocol"]["probability_margin"] == 0.001 for _, kwargs in submitted)
+        assert all(kwargs["protocol"]["sheet_pdf"] == prior["sheet"] for _, kwargs in submitted)
     else:
         assert [method for method, _ in submitted] == ["screen"] * 10 + ["controls"]
 
@@ -326,6 +400,34 @@ def test_prepared_margin_change_is_rejected_before_submission(tmp_path, monkeypa
     workflow.save(directory / "protocol.json", protocol)
     with pytest.raises(ValueError, match="Prepared protocol changed"):
         workflow.prepared_jobs(tmp_path, "short", 1)
+
+
+def test_prepared_temperature_change_is_rejected_before_submission(tmp_path, monkeypatch, prior):
+    monkeypatch.setattr(workflow, "from_reference", lambda: prior)
+    directory = workflow.prepare_inputs(tmp_path, "short", 1.5)
+    protocol = workflow.read(directory / "protocol.json")
+    protocol["initialization_temperature"] = 2
+    workflow.save(directory / "protocol.json", protocol)
+    with pytest.raises(ValueError, match="does not match"):
+        workflow.prepared_jobs(tmp_path, "short", 1.5)
+
+
+def test_temperature_directories_are_distinct_and_canonical(tmp_path, monkeypatch, prior):
+    monkeypatch.setattr(workflow, "from_reference", lambda: prior)
+    for experiment in ("short", "full"):
+        assert workflow.experiment_dir(tmp_path, experiment, 1) == workflow.experiment_dir(
+            tmp_path, experiment, 1.0
+        )
+        assert workflow.experiment_dir(tmp_path, experiment, 1.0000001) != workflow.experiment_dir(
+            tmp_path, experiment, 1.0000002
+        )
+    default = workflow.prepare_inputs(tmp_path, "short", 1)
+    tempered = workflow.prepare_inputs(tmp_path, "short", 1.5)
+    assert default.name == "short" and tempered.name == "short-T1.5"
+    assert workflow.read(default / "inputs.json") == workflow.read(tempered / "inputs.json")
+    assert workflow.protocol(tempered, "short")["initialization_temperature"] == 1.5
+    with pytest.raises(ValueError, match="only configurable"):
+        workflow.prepare_inputs(tmp_path, "softness", 1.5)
 
 
 def test_shared_worker_methods_delegate_without_changing_inputs(monkeypatch):

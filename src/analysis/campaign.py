@@ -249,7 +249,7 @@ def spawn(
     experiment: str = typer.Option(
         "", help="Prepared initialization experiment: softness, short, full."
     ),
-    temperature: int = typer.Option(1, help="Initialization temperature for full designs."),
+    temperature: float = typer.Option(1.0, help="Prior temperature for short/full initialization."),
     root: Annotated[
         Path, typer.Option(help="Preserved initialization run directory.")
     ] = paths.INITIALIZATION,
@@ -412,7 +412,7 @@ def collect(
     arm: str = typer.Option("", help="Arm key from analysis.targets."),
     force: bool = typer.Option(False, help="Recollect even if results exist."),
     experiment: str = typer.Option("", help="Initialization experiment: softness, short, full."),
-    temperature: int = typer.Option(1, help="Initialization temperature for full designs."),
+    temperature: float = typer.Option(1.0, help="Prior temperature for short/full initialization."),
     root: Annotated[
         Path, typer.Option(help="Preserved initialization run directory.")
     ] = paths.INITIALIZATION,
@@ -563,7 +563,7 @@ def run(
 @app.command()
 def prepare(
     experiment: str = typer.Option(..., help="Initialization experiment: softness, short, full."),
-    temperature: int = typer.Option(1, help="Initialization temperature for full designs."),
+    temperature: float = typer.Option(1.0, help="Prior temperature for short/full initialization."),
     root: Annotated[
         Path, typer.Option(help="Preserved initialization run directory.")
     ] = paths.INITIALIZATION,
@@ -572,7 +572,7 @@ def prepare(
     typer.echo(initialization.prepare_inputs(root.expanduser().resolve(), experiment, temperature))
 
 
-def spawn_initialization(root: Path, experiment: str, temperature: int) -> pd.DataFrame:
+def spawn_initialization(root: Path, experiment: str, temperature: float) -> pd.DataFrame:
     import modal
 
     from analysis.modal_app import APP_NAME
@@ -598,7 +598,7 @@ def spawn_initialization(root: Path, experiment: str, temperature: int) -> pd.Da
 
 
 def collect_initialization(
-    root: Path, experiment: str, temperature: int, *, force: bool = False
+    root: Path, experiment: str, temperature: float, *, force: bool = False
 ) -> None:
     initialization.validate_experiment(experiment, temperature)
     directory = initialization.experiment_dir(root, experiment, temperature)

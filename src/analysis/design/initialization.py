@@ -27,11 +27,13 @@ def tensor_bytes(value):
     return out.getvalue()
 
 
-def prior_logits(q, sequence, model_aa_order, temperature, *, margin):
+def prior_logits(q, sequence, model_aa_order, optimization_temperature, *, temperature=1.0, margin):
     """Convert minimum-boost probabilities to the model's float32 logit input.
 
     Shared by paired and full runs; the cysteine slot remains excluded. Check
     the actual softmax round-trip before sending these inputs to the model.
+    ``temperature`` tempers the prior; ``optimization_temperature`` compensates
+    for the design loop's first softmax without changing these probabilities.
     """
     import torch
 
@@ -39,15 +41,15 @@ def prior_logits(q, sequence, model_aa_order, temperature, *, margin):
 
     if len(model_aa_order) != 20 or set(model_aa_order) != set(AA) | {"C"}:
         raise ValueError("Expected the model's 20 canonical amino acids")
-    if not math.isfinite(temperature) or temperature <= 0:
-        raise ValueError("Initial temperature must be positive and finite")
-    p19 = matched_probabilities(q, sequence, margin=margin)
+    if not math.isfinite(optimization_temperature) or optimization_temperature <= 0:
+        raise ValueError("Optimization temperature must be positive and finite")
+    p19 = matched_probabilities(q, sequence, temperature=temperature, margin=margin)
     probabilities = torch.zeros(1, len(sequence), 20, dtype=torch.float32)
     indices = [model_aa_order.index(aa) for aa in AA]
     probabilities[0, :, indices] = torch.tensor(p19, dtype=torch.float32)
-    logits = temperature * probabilities.clamp_min(1e-30).log()
+    logits = optimization_temperature * probabilities.clamp_min(1e-30).log()
     logits[..., model_aa_order.index("C")] = -1e6
-    recovered = (logits / temperature).softmax(-1)
+    recovered = (logits / optimization_temperature).softmax(-1)
     expected = torch.tensor([[model_aa_order.index(aa) for aa in sequence]])
     if not torch.equal(recovered.argmax(-1), expected):
         raise ValueError("Probability margin does not survive the float32 logit round-trip")
@@ -278,6 +280,7 @@ def design_pair(driver, audit, sources, bundle: dict, protocol: dict, archive) -
             bundle["sequence"],
             order20,
             temperature0,
+            temperature=protocol["initialization_temperature"],
             margin=protocol["probability_margin"],
         )
         supplied = torch.tensor(bundle[arm], dtype=torch.float32)
@@ -388,6 +391,7 @@ def design_pair(driver, audit, sources, bundle: dict, protocol: dict, archive) -
             "num_loops": 1,
             "state_convention": "step k is before update k; post_update_logits also saved",
             "shared_initial_sequence": bundle["sequence"],
+            "initialization_temperature": protocol["initialization_temperature"],
             "probability_margin": protocol["probability_margin"],
             "initial_entropy": float(
                 -(probabilities[arm].clamp_min(1e-30).log2() * probabilities[arm]).sum(-1).mean()
@@ -443,13 +447,17 @@ def design_prior(driver, audit, sources, bundle: dict, protocol: dict, archive) 
     order = [PROTEIN_3TO1[t] for t in TOKENS[2:22]]
     t0 = 0.01 + 0.99 * 0.5 * (1 + math.cos(math.pi / protocol["steps"]))
     logits, p = prior_logits(
-        protocol["sheet_pdf"], sequence, order, t0, margin=protocol["probability_margin"]
+        protocol["sheet_pdf"],
+        sequence,
+        order,
+        t0,
+        temperature=protocol["initialization_temperature"],
+        margin=protocol["probability_margin"],
     )
     target = protocol["target_sequence"]
     if protocol["initialization_temperature"] == 1:
         prepared = prepare_folding_inputs(target, p.cuda(), seed=seed)
     else:
-        assert protocol["initialization_temperature"] in (2, 4)
         saved_features = torch.load(io.BytesIO(bundle["features_blob"]), weights_only=True)
         prepared = {
             "inputs": {k: v.cuda().clone() for k, v in saved_features.items()},

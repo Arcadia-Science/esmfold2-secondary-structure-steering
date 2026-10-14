@@ -15,11 +15,12 @@ from biotite.sequence import ProteinSequence
 from analysis import composition, deposit, figures, loss_trace, paths
 from analysis import secondary_structure as ss
 from analysis.priors import (
+    AA,
     from_reference,
     matched_probabilities,
     paired_inputs,
-    tempered_sheet,
     validate_initialization_settings,
+    validate_temperature,
 )
 from analysis.targets import (
     CRITIC_MODELS,
@@ -453,8 +454,18 @@ def digest(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def experiment_dir(root: Path, experiment: str, temperature: int) -> Path:
-    return root / (f"full-T{temperature}" if experiment == "full" else experiment)
+def temperature_label(temperature: float) -> str:
+    """Use the same label for integer and floating-point spellings of a temperature."""
+    validate_temperature(temperature)
+    value = float(temperature)
+    return str(int(value)) if value.is_integer() else str(value)
+
+
+def experiment_dir(root: Path, experiment: str, temperature: float) -> Path:
+    validate_experiment(experiment, temperature)
+    if experiment == "full" or (experiment == "short" and temperature != 1):
+        return root / f"{experiment}-T{temperature_label(temperature)}"
+    return root / experiment
 
 
 def source_hashes() -> dict:
@@ -464,7 +475,7 @@ def source_hashes() -> dict:
     }
 
 
-def prepare_inputs(root: Path, experiment: str, temperature: int) -> Path:
+def prepare_inputs(root: Path, experiment: str, temperature: float) -> Path:
     validate_experiment(experiment, temperature)
     directory = experiment_dir(root, experiment, temperature)
     if (directory / "protocol.json").exists():
@@ -482,9 +493,13 @@ def prepare_inputs(root: Path, experiment: str, temperature: int) -> Path:
     protocol["purpose"] = "Fresh reproduction; outcomes are not seed-reproducible"
     prior = from_reference() if experiment != "softness" else None
     if prior is not None:
+        if prior["amino_acid_order"] != AA:
+            raise ValueError("Unexpected prior amino-acid order")
+        protocol["initialization_temperature"] = float(temperature)
         validate_initialization_settings(protocol)
-        protocol["initialization"] = "q + b_i*(onehot(chosen_aa)-uniform19)"
-        protocol["boost_rule"] = "max(0, max_other(q) - q(chosen_aa) + probability_margin)"
+        protocol["tempering"] = "q_T = normalize(q**(1/initialization_temperature))"
+        protocol["initialization"] = "q_T + b_i*(onehot(chosen_aa)-uniform19)"
+        protocol["boost_rule"] = "max(0, max_other(q_T) - q_T(chosen_aa) + probability_margin)"
         protocol["prior_sha256"] = hashlib.sha256(
             json.dumps(prior, sort_keys=True).encode()
         ).hexdigest()
@@ -507,7 +522,10 @@ def prepare_inputs(root: Path, experiment: str, temperature: int) -> Path:
         for item in bundles:
             for arm in ("helix", "sheet"):
                 matched_probabilities(
-                    prior[arm], item["sequence"], margin=protocol["probability_margin"]
+                    prior[arm],
+                    item["sequence"],
+                    temperature=temperature,
+                    margin=protocol["probability_margin"],
                 )
         save(directory / "inputs.json", bundles)
         protocol["bundles_sha256"] = digest(directory / "inputs.json")
@@ -520,11 +538,15 @@ def prepare_inputs(root: Path, experiment: str, temperature: int) -> Path:
         initial = trace[trace["step (index)"] == 0].set_index("seed").sort_index()
         if list(initial.index) != list(range(protocol["n_seeds"])):
             raise ValueError(f"Expected {protocol['n_seeds']} baseline initial sequences")
-        q = tempered_sheet(prior, temperature)
         bundles = []
         for seed, row in initial.iterrows():
             sequence = row["binder sequence"]
-            matched_probabilities(q, sequence, margin=protocol["probability_margin"])
+            matched_probabilities(
+                prior["sheet"],
+                sequence,
+                temperature=temperature,
+                margin=protocol["probability_margin"],
+            )
             item = {"seed": int(seed), "initial_sequence": sequence}
             if temperature != 1:
                 t1 = torch.load(
@@ -544,12 +566,16 @@ def prepare_inputs(root: Path, experiment: str, temperature: int) -> Path:
         save(directory / "inputs.json", bundles)
         protocol.update(
             {
-                "arm": "sheet_prior" if temperature == 1 else f"sheet_prior_t{temperature}",
-                "initialization_temperature": temperature,
+                "arm": (
+                    "sheet_prior"
+                    if temperature == 1
+                    else f"sheet_prior_t{temperature_label(temperature)}"
+                ),
                 "aa_order": prior["amino_acid_order"],
                 "inputs_sha256": digest(directory / "inputs.json"),
                 "matching": (
-                    "Baseline hard sequences and lengths; T=2 and T=4 reuse T=1 atom features"
+                    "Baseline hard sequences and lengths; "
+                    "other temperatures reuse T=1 atom features"
                 ),
                 "baseline_trace_sha256": baseline_trace_sha256,
             }
@@ -561,16 +587,17 @@ def prepare_inputs(root: Path, experiment: str, temperature: int) -> Path:
     return directory
 
 
-def validate_experiment(experiment: str, temperature: int) -> None:
+def validate_experiment(experiment: str, temperature: float) -> None:
     if experiment not in INITIALIZATION_SPECS:
         raise ValueError(f"Unknown initialization experiment: {experiment}")
-    if temperature not in INITIALIZATION_SPECS["full"]["temperatures"]:
-        raise ValueError("Initialization temperature must be 1, 2, or 4")
-    if experiment != "full" and temperature != 1:
-        raise ValueError("Temperature is only configurable for full initialization designs")
+    validate_temperature(temperature)
+    if experiment == "softness" and temperature != 1:
+        raise ValueError(
+            "Temperature is only configurable for short and full initialization designs"
+        )
 
 
-def prepared_jobs(root: Path, experiment: str, temperature: int) -> tuple[dict, list[dict]]:
+def prepared_jobs(root: Path, experiment: str, temperature: float) -> tuple[dict, list[dict]]:
     """Validate preserved inputs and derive worker arguments before any submission."""
     validate_experiment(experiment, temperature)
     directory = experiment_dir(root, experiment, temperature)
@@ -578,7 +605,7 @@ def prepared_jobs(root: Path, experiment: str, temperature: int) -> tuple[dict, 
     if protocol["source_sha256"] != source_hashes():
         raise RuntimeError("Source changed since preparation; deploy and prepare in a new --root")
     if protocol.get("experiment") != experiment or (
-        experiment == "full" and protocol["initialization_temperature"] != temperature
+        experiment != "softness" and protocol["initialization_temperature"] != temperature
     ):
         raise ValueError("Prepared protocol does not match the requested experiment")
     recorded_id = protocol["protocol_id"]
@@ -627,8 +654,7 @@ def prepared_jobs(root: Path, experiment: str, temperature: int) -> tuple[dict, 
     if digest(inputs) != expected:
         raise ValueError("Prepared inputs changed")
     if experiment == "full":
-        q = tempered_sheet(prior, temperature)
-        protocol = {**protocol, "sheet_pdf": q.tolist()}
+        protocol = {**protocol, "sheet_pdf": prior["sheet"]}
     else:
         protocol = {**protocol, "priors": {arm: prior[arm] for arm in ("helix", "sheet")}}
     for item in read(inputs):
@@ -637,7 +663,10 @@ def prepared_jobs(root: Path, experiment: str, temperature: int) -> tuple[dict, 
                 **item,
                 **{
                     arm: matched_probabilities(
-                        prior[arm], item["sequence"], margin=protocol["probability_margin"]
+                        prior[arm],
+                        item["sequence"],
+                        temperature=temperature,
+                        margin=protocol["probability_margin"],
                     ).tolist()
                     for arm in ("helix", "sheet")
                 },

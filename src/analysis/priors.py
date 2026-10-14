@@ -23,30 +23,43 @@ def _probability_vector(q: np.ndarray) -> np.ndarray:
     return q
 
 
-def tempered_sheet(prior: dict, temperature: int) -> np.ndarray:
-    """Flatten the sheet prior before calculating each position's minimum boost."""
-    if temperature not in (1, 2, 4):
-        raise ValueError("The published temperatures are 1, 2, and 4")
-    if prior["amino_acid_order"] != AA:
-        raise ValueError("Unexpected amino-acid order")
-    q = _probability_vector(prior["sheet"])
+def validate_temperature(temperature: float) -> None:
+    if not np.isfinite(temperature) or temperature <= 0:
+        raise ValueError("Initialization temperature must be positive and finite")
+
+
+def tempered_prior(q: np.ndarray, temperature: float = 1.0) -> np.ndarray:
+    """Return normalized q**(1/temperature); values above one flatten the prior."""
+    validate_temperature(temperature)
+    q = _probability_vector(q)
     if temperature == 1:
         return q.copy()
-    scores = np.log(q) / temperature
-    qt = np.exp(scores - scores.max())
+    scores = np.log(q)
+    with np.errstate(over="ignore", under="ignore"):
+        qt = np.exp((scores - scores.max()) / temperature)
     qt /= qt.sum()
+    if not (qt > 0).all():
+        raise ValueError("Initialization temperature produces nonpositive prior probabilities")
     return qt
 
 
 def minimum_boosts(
-    q: np.ndarray, sequence: str, *, margin: float = INITIALIZATION_MARGIN
+    q: np.ndarray,
+    sequence: str,
+    *,
+    temperature: float = 1.0,
+    margin: float = INITIALIZATION_MARGIN,
 ) -> np.ndarray:
     """Smallest nonnegative boosts that give each chosen identity the required lead.
 
-    Calculate independently for each prior and position. An identity that
-    already exceeds all competitors by ``margin`` needs no adjustment.
+    Temper the prior first, then calculate independently for each position.
+    An identity that already exceeds all competitors by ``margin`` needs no
+    adjustment. The margin is measured in the final probabilities.
     """
-    q = _probability_vector(q)
+    return _minimum_boosts(tempered_prior(q, temperature), sequence, margin)
+
+
+def _minimum_boosts(q: np.ndarray, sequence: str, margin: float) -> np.ndarray:
     if not np.isfinite(margin) or margin <= 0:
         raise ValueError("Probability margin must be positive and finite")
     if not sequence or any(aa not in AA for aa in sequence):
@@ -58,16 +71,21 @@ def minimum_boosts(
 
 
 def matched_probabilities(
-    q: np.ndarray, sequence: str, *, margin: float = INITIALIZATION_MARGIN
+    q: np.ndarray,
+    sequence: str,
+    *,
+    temperature: float = 1.0,
+    margin: float = INITIALIZATION_MARGIN,
 ) -> np.ndarray:
     """Preserve the hard sequence with each prior's minimum position-specific boost.
 
-    p_i(a) = q(a) + b_i * (1[a = a_i] - 1/19). This keeps the sum at one.
+    Temper first: q_T(a) is proportional to q(a)**(1/temperature).
+    Then p_i(a) = q_T(a) + b_i * (1[a = a_i] - 1/19), keeping the sum at one.
     Reject priors/margins that make any probability nonpositive rather than
     clipping or renormalizing, which would change the intended margin.
     """
-    boosts = minimum_boosts(q, sequence, margin=margin)
-    q = np.asarray(q, dtype=float)
+    q = tempered_prior(q, temperature)
+    boosts = _minimum_boosts(q, sequence, margin)
     chosen = np.asarray([AA.index(aa) for aa in sequence])
     p = q + boosts[:, None] * (np.eye(len(AA))[chosen] - 1 / len(AA))
     if not (p > 0).all() or not np.isfinite(p).all():
@@ -78,7 +96,8 @@ def matched_probabilities(
 
 
 def validate_initialization_settings(protocol: dict) -> None:
-    """Require a positive finite probability margin for prior initialization."""
+    """Require a positive finite temperature and probability margin."""
+    validate_temperature(protocol.get("initialization_temperature", 0))
     margin = protocol.get("probability_margin", 0)
     if not np.isfinite(margin) or margin <= 0:
         raise ValueError("Probability margin must be positive and finite")
