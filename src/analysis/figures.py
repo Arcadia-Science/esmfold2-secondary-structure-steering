@@ -292,27 +292,10 @@ STATES: dict[str, State] = {
 
 
 def _binned_means(values: pd.Series, lengths: pd.Series, edges: np.ndarray) -> pd.DataFrame:
-    """Mean, standard error and count of ``values`` per length bin.
+    """Compatibility wrapper for the chain-level length summary."""
+    from analysis.composition import summarize_by_length
 
-    The mean rather than the median, because sheet fraction is zero-inflated:
-    a median reads as exactly zero for both the designs and a fifth of the
-    natural set, which hides the difference instead of showing it.
-    """
-    inclusive_edges = np.asarray(edges, dtype=float).copy()
-    inclusive_edges[-1] = np.nextafter(inclusive_edges[-1], np.inf)
-    binned = pd.cut(lengths, bins=inclusive_edges, right=False)
-    grouped = values.groupby(binned, observed=False)
-    counts = grouped.size()
-    means = grouped.mean()
-    errors = grouped.std(ddof=1) / np.sqrt(counts.where(counts > 0))
-    return pd.DataFrame(
-        {
-            "centre": [interval.mid for interval in means.index],
-            "mean": means.to_numpy(),
-            "error": errors.to_numpy(),
-            "n": counts.to_numpy(),
-        }
-    )
+    return summarize_by_length(values, lengths, edges)
 
 
 def composition_bars(
@@ -356,8 +339,21 @@ def _composition_bars(
     reference = _binned_means(natural[spec.natural_column], natural[natural_length], edges)
     designed = _binned_means(designs[spec.design_column], designs[design_length], edges)
 
+    return _composition_comparison(spec, reference, designed, edges)
+
+
+def composition_comparison(
+    reference: pd.DataFrame, designed: pd.DataFrame, state: str, edges: np.ndarray
+) -> plt.Figure:
+    """Draw precomputed chain means and standard errors in the supplied length bins."""
+    scaled = {key: plt.rcParams[key] * FONT_SCALE for key in FONT_SIZE_KEYS}
+    with plt.rc_context(scaled):
+        return _composition_comparison(STATES[state], reference, designed, edges)
+
+
+def _composition_comparison(spec, reference, designed, edges) -> plt.Figure:
     figure, axis = plt.subplots(figsize=PANEL_SIZE_INCHES)
-    index = np.arange(LENGTH_BIN_COUNT)
+    index = np.arange(len(edges) - 1)
     for offset, frame, facecolor, linewidth, label in (
         (-BAR_WIDTH / 2, reference, "none", 1.6, "Natural binders (RCSB)"),
         (BAR_WIDTH / 2, designed, spec.colour, 0.8, "ESMFold2 designs"),
@@ -1086,7 +1082,8 @@ def schedule_traces(
         raise KeyError(f"steps {missing} are not in the scan; it holds {sorted(scan)}")
     scaled = {key: plt.rcParams[key] * FONT_SCALE for key in FONT_SIZE_KEYS}
     with plt.rc_context(scaled):
-        return _schedule_traces(spec, trace, scan, drawn, notation, baseline, never)
+        medians = trace.groupby(["arm", "step (index)"])[spec.column].median().reset_index()
+        return _schedule_traces(spec, medians, scan, drawn, notation, baseline, never)
 
 
 def _schedule_traces(
@@ -1109,7 +1106,7 @@ def _schedule_traces(
         subset = trace[trace["arm"] == scan[step]]
         if subset.empty:
             raise ValueError(f"no loss log for {scan[step]}")
-        median = subset.groupby("step (index)")[spec.column].median()
+        median = subset.set_index("step (index)")[spec.column].sort_index()
         colour = SCAN_BASELINE_COLOR if step == baseline else ramp[step]
         axis.plot(
             median.index,
@@ -1381,8 +1378,6 @@ def _composition_stack(
     designs: pd.DataFrame, target: str | None, arms: list[str], natural: pd.DataFrame
 ) -> plt.Figure:
     figure, axis = plt.subplots(figsize=PANEL_SIZE_INCHES)
-    positions = np.arange(len(arms))
-
     selected = designs if target is None else designs[designs["target"] == target]
     rows = {arm: selected[selected["arm"] == arm] for arm in arms}
     counts = {arm: len(frame) for arm, frame in rows.items()}
@@ -1397,14 +1392,33 @@ def _composition_stack(
     ]
     if absent:
         raise KeyError(f"the natural reference set is missing {absent}")
-    natural_position = -1.0
-
-    bottoms = np.zeros(len(arms) + 1)
-    for state in STATES.values():
-        heights = np.array(
-            [natural[state.natural_column].mean()]
+    means = pd.DataFrame(
+        {
+            state.key: [natural[state.natural_column].mean()]
             + [rows[arm][state.design_column].mean() for arm in arms]
-        )
+            for state in STATES.values()
+        },
+        index=["natural", *arms],
+    )
+    return _composition_means(means, figure, axis)
+
+
+def composition_means(means: pd.DataFrame) -> plt.Figure:
+    """Draw precomputed state means, with the natural reference first."""
+    scaled = {key: plt.rcParams[key] * FONT_SCALE for key in FONT_SIZE_KEYS}
+    scaled["xtick.labelsize"] *= STACK_TICK_SCALE
+    with plt.rc_context(scaled):
+        figure, axis = plt.subplots(figsize=PANEL_SIZE_INCHES)
+        return _composition_means(means, figure, axis)
+
+
+def _composition_means(means, figure, axis) -> plt.Figure:
+    arms = list(means.index[1:])
+    positions = np.arange(len(arms))
+    natural_position = -1.0
+    bottoms = np.zeros(len(means))
+    for state in STATES.values():
+        heights = means[state.key].to_numpy()
         axis.bar(
             [natural_position, *positions],
             heights,
@@ -1462,6 +1476,11 @@ TRACE_METRICS: dict[str, TraceMetric] = {
         key="iptm_proxy",
         column="distogram iptm proxy (0-1)",
         axis_label="distogram interface pTM proxy (0-1)",
+    ),
+    "entropy": TraceMetric(
+        key="entropy",
+        column="sequence entropy (bits)",
+        axis_label="sequence entropy (bits/residue)",
     ),
 }
 
@@ -1556,13 +1575,26 @@ def trace_lines(trace: pd.DataFrame, metric: str, arms: list[str]) -> plt.Figure
 
 
 def _trace_lines(spec: TraceMetric, trace: pd.DataFrame, arms: list[str]) -> plt.Figure:
-    figure, axis = plt.subplots(figsize=PANEL_SIZE_INCHES)
+    medians = trace.groupby(["arm", "step (index)"])[spec.column].median().reset_index()
+    return _trace_summary(spec, medians, arms)
 
+
+def trace_summary(medians: pd.DataFrame, metric: str, arms: list[str]) -> plt.Figure:
+    """Draw precomputed per-step medians for each condition."""
+    scaled = {key: plt.rcParams[key] * FONT_SCALE for key in FONT_SIZE_KEYS}
+    with plt.rc_context(scaled):
+        return _trace_summary(TRACE_METRICS[metric], medians, arms)
+
+
+def _trace_summary(spec, trace, arms) -> plt.Figure:
+    if spec.key == "entropy":
+        return _entropy_trace_summary(spec, trace, arms)
+    figure, axis = plt.subplots(figsize=PANEL_SIZE_INCHES)
     endpoints = []
     for arm in arms:
-        subset = trace[trace["arm"] == arm]
-        steps = np.asarray(sorted(subset["step (index)"].unique()))
-        medians = subset.groupby("step (index)")[spec.column].median().to_numpy()
+        subset = trace[trace["arm"] == arm].sort_values("step (index)")
+        steps = subset["step (index)"].to_numpy()
+        medians = subset[spec.column].to_numpy()
         axis.plot(
             steps,
             medians,
@@ -1592,3 +1624,64 @@ def _trace_lines(spec: TraceMetric, trace: pd.DataFrame, arms: list[str]) -> plt
     apc.mpl.style_plot(axis)
     figure.tight_layout()
     return figure
+
+
+def _entropy_trace_summary(spec, trace, arms) -> plt.Figure:
+    """Show soft-sequence entropy against the uniform initialization baseline."""
+    figure, axis = plt.subplots(figsize=PANEL_SIZE_INCHES)
+    for arm in arms:
+        subset = trace[trace["arm"] == arm].sort_values("step (index)")
+        axis.plot(
+            subset["step (index)"],
+            subset[spec.column],
+            color=ARM_COLORS[arm],
+            linewidth=TRACE_LINE_WIDTH,
+            label=ARM_LABELS[arm],
+            zorder=3,
+        )
+    # Cysteine is excluded, leaving 19 allowed amino acids at each position.
+    axis.axhline(np.log2(19), color="#737373", linewidth=1, linestyle=(0, (6, 4)))
+    last_step = trace["step (index)"].max()
+    annotation_size = plt.rcParams["xtick.labelsize"]
+    axis.text(
+        last_step, 4.34, "Uniform: 4.248 bits", ha="right", va="bottom",
+        fontsize=annotation_size,
+    )
+    axis.set(
+        xlim=(0, last_step), ylim=(0, 4.7),
+        xlabel="optimization step (index)", ylabel=spec.axis_label,
+    )
+    axis.set_xticks([0, 50, 100, last_step])
+    apc.mpl.style_plot(axis)
+    axis.legend(
+        loc="lower left", bbox_to_anchor=(0.05, 0.06),
+        ncol=1, frameon=False, fontsize=annotation_size,
+        handlelength=1.3, handletextpad=0.4,
+    )
+    figure.tight_layout()
+    return figure
+
+
+def schedule_trace_panels(medians, scans, drawn_steps) -> list[plt.Figure]:
+    """Draw onset and withdrawal traces from precomputed per-step medians."""
+    from analysis.targets import SGD_STEPS
+
+    panels = []
+    scaled = {key: plt.rcParams[key] * FONT_SCALE for key in FONT_SIZE_KEYS}
+    for name, notation, baseline in (
+        ("onset", ONSET_NOTATION, SGD_STEPS),
+        ("withdrawal", RELEASE_NOTATION, 0),
+    ):
+        with plt.rc_context(scaled):
+            panels.append(
+                _schedule_traces(
+                    TRACE_METRICS["helix_mean"],
+                    medians[name],
+                    scans[name],
+                    drawn_steps[name],
+                    notation,
+                    baseline,
+                    SGD_STEPS,
+                )
+            )
+    return panels

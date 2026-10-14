@@ -9,37 +9,79 @@ from biotite.sequence import ProteinSequence
 from analysis import paths, rcsb, reference
 from analysis import secondary_structure as ss
 from analysis.parallel import DEFAULT_WORKERS, starmap, validate_workers
-from analysis.targets import INITIALIZATION_SPECS
+from analysis.targets import INITIALIZATION_MARGIN, INITIALIZATION_SPECS
 
 AA = list("ADEFGHIKLMNPQRSTVWY")
 
 
-def tempered_sheet(prior: dict, temperature: int) -> tuple[np.ndarray, float]:
-    """Flatten the prior and scale the identity-preserving boost with its range."""
+def _probability_vector(q: np.ndarray) -> np.ndarray:
+    q = np.asarray(q, dtype=float)
+    if q.shape != (len(AA),) or not np.isfinite(q).all() or not (q > 0).all():
+        raise ValueError("Expected 19 positive finite probabilities excluding cysteine")
+    if not np.isclose(q.sum(), 1, atol=1e-12, rtol=1e-9):
+        raise ValueError("Expected a normalized amino-acid prior")
+    return q
+
+
+def tempered_sheet(prior: dict, temperature: int) -> np.ndarray:
+    """Flatten the sheet prior before calculating each position's minimum boost."""
     if temperature not in (1, 2, 4):
         raise ValueError("The published temperatures are 1, 2, and 4")
-    q = np.asarray(prior["sheet"], dtype=float)
-    if prior["amino_acid_order"] != AA or q.shape != (19,) or not np.all(q > 0):
-        raise ValueError("Expected a positive 19-amino-acid prior excluding cysteine")
-    if not np.isclose(q.sum(), 1) or np.ptp(q) == 0:
-        raise ValueError("Expected a normalized, nonuniform sheet prior")
-    qt = np.exp(np.log(q) / temperature)
+    if prior["amino_acid_order"] != AA:
+        raise ValueError("Unexpected amino-acid order")
+    q = _probability_vector(prior["sheet"])
+    if temperature == 1:
+        return q.copy()
+    scores = np.log(q) / temperature
+    qt = np.exp(scores - scores.max())
     qt /= qt.sum()
-    epsilon = INITIALIZATION_SPECS["short"]["epsilon"]
-    boost = epsilon if temperature == 1 else float(epsilon * np.ptp(qt) / np.ptp(q))
-    return qt, boost
+    return qt
 
 
-def matched_probabilities(q: np.ndarray, sequence: str, boost: float) -> np.ndarray:
-    """Preserve the chosen hard identity at every position without freezing gradients."""
-    q = np.asarray(q)
+def minimum_boosts(
+    q: np.ndarray, sequence: str, *, margin: float = INITIALIZATION_MARGIN
+) -> np.ndarray:
+    """Smallest nonnegative boosts that give each chosen identity the required lead.
+
+    Calculate independently for each prior and position. An identity that
+    already exceeds all competitors by ``margin`` needs no adjustment.
+    """
+    q = _probability_vector(q)
+    if not np.isfinite(margin) or margin <= 0:
+        raise ValueError("Probability margin must be positive and finite")
+    if not sequence or any(aa not in AA for aa in sequence):
+        raise ValueError("Expected a nonempty sequence of canonical, non-cysteine amino acids")
     chosen = np.asarray([AA.index(aa) for aa in sequence])
-    p = q + boost * (np.eye(19)[chosen] - 1 / 19)
-    if not (p > 0).all() or not np.allclose(p.sum(-1), 1):
-        raise ValueError("The boost does not give positive normalized probabilities")
+    competitors = np.broadcast_to(q, (len(sequence), len(AA))).copy()
+    competitors[np.arange(len(sequence)), chosen] = -np.inf
+    return np.maximum(0, competitors.max(axis=1) - q[chosen] + margin)
+
+
+def matched_probabilities(
+    q: np.ndarray, sequence: str, *, margin: float = INITIALIZATION_MARGIN
+) -> np.ndarray:
+    """Preserve the hard sequence with each prior's minimum position-specific boost.
+
+    p_i(a) = q(a) + b_i * (1[a = a_i] - 1/19). This keeps the sum at one.
+    Reject priors/margins that make any probability nonpositive rather than
+    clipping or renormalizing, which would change the intended margin.
+    """
+    boosts = minimum_boosts(q, sequence, margin=margin)
+    q = np.asarray(q, dtype=float)
+    chosen = np.asarray([AA.index(aa) for aa in sequence])
+    p = q + boosts[:, None] * (np.eye(len(AA))[chosen] - 1 / len(AA))
+    if not (p > 0).all() or not np.isfinite(p).all():
+        raise ValueError("Minimum boost would make probabilities nonpositive for this prior/margin")
     if not np.array_equal(p.argmax(-1), chosen):
-        raise ValueError("The boost does not preserve the requested hard sequence")
+        raise ValueError("Probability margin is too small to preserve the requested hard sequence")
     return p
+
+
+def validate_initialization_settings(protocol: dict) -> None:
+    """Require a positive finite probability margin for prior initialization."""
+    margin = protocol.get("probability_margin", 0)
+    if not np.isfinite(margin) or margin <= 0:
+        raise ValueError("Probability margin must be positive and finite")
 
 
 def paired_inputs() -> list[dict]:
@@ -85,6 +127,19 @@ def from_reference(natural=None, *, workers: int = DEFAULT_WORKERS) -> dict:
     normalizing, so process scheduling cannot affect the probabilities.
     ``workers=1`` runs serially, including reference selection when needed.
     """
+    counts = count_reference(natural, workers=workers)
+    return {
+        "amino_acid_order": AA,
+        "excluded_amino_acid": "C",
+        **{state: (count / count.sum()).tolist() for state, count in counts.items()},
+        "residue_counts": {state: int(count.sum()) for state, count in counts.items()},
+        "uniform": [1 / 19] * 19,
+        "definition": "P(amino acid | DSSP state, canonical and non-Cys)",
+    }
+
+
+def count_reference(natural=None, *, workers: int = DEFAULT_WORKERS) -> dict[str, np.ndarray]:
+    """Pool canonical non-cysteine residue counts by DSSP state across reference chains."""
     validate_workers(workers)
     if natural is None:
         natural = reference.composition(workers=workers)
@@ -97,11 +152,4 @@ def from_reference(natural=None, *, workers: int = DEFAULT_WORKERS) -> dict:
     for entry_counts in starmap(count_entry, jobs, workers=workers):
         for state in counts:
             counts[state] += entry_counts[state]
-    return {
-        "amino_acid_order": AA,
-        "excluded_amino_acid": "C",
-        **{state: (count / count.sum()).tolist() for state, count in counts.items()},
-        "residue_counts": {state: int(count.sum()) for state, count in counts.items()},
-        "uniform": [1 / 19] * 19,
-        "definition": "P(amino acid | DSSP state, canonical and non-Cys)",
-    }
+    return counts

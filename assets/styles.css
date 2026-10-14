@@ -1,3 +1,9 @@
+/* Notebook PNGs include fixed dimensions; scale them to the article width. */
+.quarto-figure img.figure-img {
+  max-width: 100%;
+  height: auto;
+}
+
 /* Mark the molecular viewer's scroll-capture area without shifting the layout. */
 #fig-scene [id^="3dmolviewer_"]::before {
   content: "";

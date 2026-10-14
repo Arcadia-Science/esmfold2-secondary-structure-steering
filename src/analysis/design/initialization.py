@@ -27,6 +27,35 @@ def tensor_bytes(value):
     return out.getvalue()
 
 
+def prior_logits(q, sequence, model_aa_order, temperature, *, margin):
+    """Convert minimum-boost probabilities to the model's float32 logit input.
+
+    Shared by paired and full runs; the cysteine slot remains excluded. Check
+    the actual softmax round-trip before sending these inputs to the model.
+    """
+    import torch
+
+    from analysis.priors import AA, matched_probabilities
+
+    if len(model_aa_order) != 20 or set(model_aa_order) != set(AA) | {"C"}:
+        raise ValueError("Expected the model's 20 canonical amino acids")
+    if not math.isfinite(temperature) or temperature <= 0:
+        raise ValueError("Initial temperature must be positive and finite")
+    p19 = matched_probabilities(q, sequence, margin=margin)
+    probabilities = torch.zeros(1, len(sequence), 20, dtype=torch.float32)
+    indices = [model_aa_order.index(aa) for aa in AA]
+    probabilities[0, :, indices] = torch.tensor(p19, dtype=torch.float32)
+    logits = temperature * probabilities.clamp_min(1e-30).log()
+    logits[..., model_aa_order.index("C")] = -1e6
+    recovered = (logits / temperature).softmax(-1)
+    expected = torch.tensor([[model_aa_order.index(aa) for aa in sequence]])
+    if not torch.equal(recovered.argmax(-1), expected):
+        raise ValueError("Probability margin does not survive the float32 logit round-trip")
+    if not torch.allclose(recovered, probabilities, atol=1e-7, rtol=1e-6):
+        raise ValueError("Initial probabilities changed during logit conversion")
+    return logits, probabilities
+
+
 def prepare_screen_inputs() -> dict:
     """Generate CPU logits from the current settings; derive probabilities when used."""
     import torch
@@ -221,14 +250,18 @@ def design_pair(driver, audit, sources, bundle: dict, protocol: dict, archive) -
     import torch
     from esm.models.esmfold2.constants import PROTEIN_3TO1
 
-    from analysis.design.constants import CYS_IDX, TOKENS
+    from analysis.design.constants import TOKENS
     from analysis.design.folding import fold_and_get_distogram, prepare_folding_inputs
     from analysis.design.loop import design_binder
     from analysis.design.losses import get_mid_points
     from analysis.design.sequence import sequence_to_one_hot
     from analysis.design.structure import build_complex
+    from analysis.priors import AA, validate_initialization_settings
     from analysis.steering import helix_mean_loss
 
+    validate_initialization_settings(protocol)
+    if bundle["aa_order"] != AA:
+        raise ValueError("Unexpected paired-input amino-acid order")
     index = bundle["pair"]
     folder = Path("/study") / protocol["protocol_id"] / "runs" / f"pair{index:02d}"
     folder.mkdir(parents=True, exist_ok=True)
@@ -240,15 +273,18 @@ def design_pair(driver, audit, sources, bundle: dict, protocol: dict, archive) -
     temperature0 = 0.01 + 0.99 * 0.5 * (1 + math.cos(math.pi / protocol["annealing_horizon"]))
     probabilities, logits = {}, {}
     for arm in ("helix", "sheet"):
-        p19 = torch.tensor(bundle[arm], dtype=torch.float32)
-        p20 = torch.zeros(1, protocol["binder_length"], 20)
-        for j, aa in enumerate(bundle["aa_order"]):
-            p20[0, :, order20.index(aa)] = p19[:, j]
-        init = temperature0 * p20.clamp_min(1e-30).log()
-        init[..., CYS_IDX] = -1e6
-        recovered = (init / temperature0).softmax(-1)
-        assert torch.allclose(recovered, p20, atol=1e-7, rtol=1e-6)
-        probabilities[arm], logits[arm] = recovered, init
+        init, p20 = prior_logits(
+            protocol["priors"][arm],
+            bundle["sequence"],
+            order20,
+            temperature0,
+            margin=protocol["probability_margin"],
+        )
+        supplied = torch.tensor(bundle[arm], dtype=torch.float32)
+        expected = p20[0, :, [order20.index(aa) for aa in AA]]
+        if supplied.shape != expected.shape or not torch.equal(supplied, expected):
+            raise ValueError("Paired probabilities differ from the prepared initialization rule")
+        probabilities[arm], logits[arm] = p20, init
     assert torch.equal(probabilities["helix"].argmax(-1), probabilities["sheet"].argmax(-1))
     target = protocol["target_sequence"]
     prepared = prepare_folding_inputs(target, probabilities["helix"].cuda(), seed=72000 + index)
@@ -352,6 +388,7 @@ def design_pair(driver, audit, sources, bundle: dict, protocol: dict, archive) -
             "num_loops": 1,
             "state_convention": "step k is before update k; post_update_logits also saved",
             "shared_initial_sequence": bundle["sequence"],
+            "probability_margin": protocol["probability_margin"],
             "initial_entropy": float(
                 -(probabilities[arm].clamp_min(1e-30).log2() * probabilities[arm]).sum(-1).mean()
             ),
@@ -371,10 +408,14 @@ def design_prior(driver, audit, sources, bundle: dict, protocol: dict, archive) 
     import torch
     from esm.models.esmfold2.constants import PROTEIN_3TO1
 
-    from analysis.design.constants import CYS_IDX, TOKENS
+    from analysis.design.constants import TOKENS
     from analysis.design.folding import prepare_folding_inputs
     from analysis.design.loop import design_binder
+    from analysis.priors import AA, validate_initialization_settings
 
+    validate_initialization_settings(protocol)
+    if protocol["aa_order"] != AA:
+        raise ValueError("Unexpected prior amino-acid order")
     seed = bundle["seed"]
     directory = Path("/study") / protocol["protocol_id"] / f"seed{seed:02d}"
     directory.mkdir(parents=True, exist_ok=True)
@@ -400,17 +441,10 @@ def design_prior(driver, audit, sources, bundle: dict, protocol: dict, archive) 
     sequence = bundle["initial_sequence"]
     length = len(sequence)
     order = [PROTEIN_3TO1[t] for t in TOKENS[2:22]]
-    p = torch.zeros(1, length, 20)
-    q = dict(zip(protocol["aa_order"], protocol["sheet_pdf"], strict=True))
-    for i, chosen in enumerate(sequence):
-        for aa in protocol["aa_order"]:
-            p[0, i, order.index(aa)] = q[aa] + protocol["boost"] * (float(aa == chosen) - 1 / 19)
     t0 = 0.01 + 0.99 * 0.5 * (1 + math.cos(math.pi / protocol["steps"]))
-    logits = t0 * p.clamp_min(1e-30).log()
-    logits[..., CYS_IDX] = -1e6
-    recovered = (logits / t0).softmax(-1)
-    assert torch.allclose(p, recovered, atol=1e-7, rtol=1e-6)
-    assert "".join(order[i] for i in p.argmax(-1)[0]) == sequence
+    logits, p = prior_logits(
+        protocol["sheet_pdf"], sequence, order, t0, margin=protocol["probability_margin"]
+    )
     target = protocol["target_sequence"]
     if protocol["initialization_temperature"] == 1:
         prepared = prepare_folding_inputs(target, p.cuda(), seed=seed)
@@ -485,7 +519,7 @@ def design_prior(driver, audit, sources, bundle: dict, protocol: dict, archive) 
         "steps": len(trace),
         "arm": protocol["arm"],
         "initialization_temperature": protocol["initialization_temperature"],
-        "boost": protocol["boost"],
+        "probability_margin": protocol["probability_margin"],
         "initial_sequence": sequence,
         "binder_sequence": primary["designed_sequence"].split("|")[-1],
         "primary_critic": PRIMARY_CRITIC,

@@ -1,6 +1,7 @@
 """Recalculate natural binder measurements from preserved reference inputs."""
 
 from __future__ import annotations
+import json
 
 import pandas as pd
 
@@ -34,3 +35,21 @@ def composition(*, workers: int = DEFAULT_WORKERS) -> pd.DataFrame:
 def pairs(*, workers: int = DEFAULT_WORKERS) -> pd.DataFrame:
     """Measure every candidate pair, retaining selection flags."""
     return table(PAIRS_TABLE, workers=workers)
+
+
+def recorded_query_settings() -> dict:
+    """Read scientific settings from the archived query, without a live search."""
+    from analysis import rcsb
+
+    query = json.loads(paths.reference_table(QUERY_RECORD).read_text())
+    criteria = {
+        node["parameters"]["attribute"]: node["parameters"].get("value")
+        for node in query["query"]["nodes"]
+    }
+    return {
+        "Resolution limit (Å)": criteria["rcsb_entry_info.resolution_combined"],
+        "Released by": criteria["rcsb_accession_info.initial_release_date"],
+        "Sequence identity (%)": query["request_options"]["group_by"]["similarity_cutoff"],
+        "Length range (residues)": criteria["entity_poly.rcsb_sample_sequence_length"],
+        "Minimum resolved backbone fraction": rcsb.MIN_OBSERVED_FRACTION,
+    }

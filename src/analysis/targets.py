@@ -308,6 +308,7 @@ SGD_STEPS = 150
 
 # Initialization follow-ups use the same target registry and campaign defaults.
 INITIALIZATION_TARGET = "pdl1_igv"
+INITIALIZATION_MARGIN = 0.001
 INITIALIZATION_SPECS = {
     "softness": {
         "checkpoint": PRIMARY_CRITIC,
@@ -349,10 +350,11 @@ INITIALIZATION_SPECS = {
         "pairs": 5,
         "updates": 40,
         "annealing_horizon": SGD_STEPS,
-        "epsilon": 0.12,
+        "probability_margin": INITIALIZATION_MARGIN,
         "coordinate_solver_steps": 50,
     },
     "full": {
+        "probability_margin": INITIALIZATION_MARGIN,
         "steps": SGD_STEPS,
         "optimization_solver_steps": 1,
         "confidence_selection_solver_steps": 1,

@@ -14,7 +14,13 @@ from biotite.sequence import ProteinSequence
 
 from analysis import composition, deposit, figures, loss_trace, paths
 from analysis import secondary_structure as ss
-from analysis.priors import from_reference, matched_probabilities, paired_inputs, tempered_sheet
+from analysis.priors import (
+    from_reference,
+    matched_probabilities,
+    paired_inputs,
+    tempered_sheet,
+    validate_initialization_settings,
+)
 from analysis.targets import (
     CRITIC_MODELS,
     INITIALIZATION_BASELINES,
@@ -61,6 +67,12 @@ def load(root: Path | None = None) -> dict[str, pd.DataFrame]:
         "hardening": hardening,
         "critic-scores": critics,
     }
+    validate(tables)
+    return tables
+
+
+def validate(tables: dict[str, pd.DataFrame]) -> None:
+    """Check completeness, matching and finite measurements across the follow-ups."""
     designs = tables["designs"]
     assert set(designs.arm) == set(LABELS)
     assert not designs.duplicated(["arm", "seed"]).any()
@@ -90,12 +102,12 @@ def load(root: Path | None = None) -> dict[str, pd.DataFrame]:
     assert not softness.duplicated(["input_index", "mode", "dropout"]).any()
     for _, frame in softness.groupby(["mode", "dropout"]):
         assert set(frame.input_index) == set(range(INITIALIZATION_SPECS["softness"]["inputs"]))
+    critics = tables["critic-scores"]
     assert (
         len(critics) == len(LABELS) * N_SEEDS * len(CRITICS)
         and not critics.duplicated(["arm", "seed", "critic"]).any()
     )
     assert np.isfinite(critics[["iptm", "plddt"]]).all().all()
-    return tables
 
 
 def summary(designs: pd.DataFrame) -> pd.DataFrame:
@@ -143,8 +155,10 @@ def report() -> dict:
     }
 
 
-def short_trajectories(frame: pd.DataFrame) -> plt.Figure:
+def short_trajectories(frame: pd.DataFrame, means: pd.DataFrame | None = None) -> plt.Figure:
     """Individual trajectories and means for five matched inputs per prior."""
+    if means is None:
+        means = frame.groupby(["arm", "step"])[["helix", "sheet", "helix_proxy", "entropy"]].mean()
     with plt.rc_context({"font.size": 10, "axes.labelsize": 10, "axes.titlesize": 11}):
         fig, axes = plt.subplots(2, 2, figsize=(10, 6.5), layout="constrained")
         specs = [
@@ -161,8 +175,8 @@ def short_trajectories(frame: pd.DataFrame) -> plt.Figure:
                 group = frame[frame.arm == arm]
                 for _, trajectory in group.groupby("pair"):
                     ax.plot(trajectory.step, trajectory[metric], color=color, alpha=0.2, lw=0.8)
-                means = group.groupby("step")[metric].mean()
-                ax.plot(means.index, means, label=label, color=color, ls=style, lw=2.3)
+                mean = means.loc[arm, metric]
+                ax.plot(mean.index, mean, label=label, color=color, ls=style, lw=2.3)
             ax.set(xlabel="Optimization step (before update)", ylabel=title, xlim=(0, 39))
             ax.set_ylim((3.2, 4.0) if metric == "entropy" else (-0.02, 1.02))
             ax.spines[["top", "right"]].set_visible(False)
@@ -208,21 +222,17 @@ CRITICS = set(CRITIC_MODELS)
 
 
 def protocol(root: Path, experiment: str) -> dict:
-    """Validate the recorded design against the registered publication settings."""
+    """Validate a run against the current experiment settings."""
     value = read(root / "protocol.json")
-    expected = INITIALIZATION_SPECS[experiment]
-    if experiment == "full":
-        # The original runs recorded the seed list rather than its count.
-        value.setdefault("n_seeds", len(value.get("seeds", [])))
-        value.setdefault("initialization_temperature", 1)
-    # Extra provenance and historical pilot records remain intact.
-    for key, wanted in expected.items():
+    for key, wanted in INITIALIZATION_SPECS[experiment].items():
         if key in {"controls", "torch_compile", "temperatures"}:
             continue
         if value.get(key) != wanted:
             raise ValueError(
                 f"Protocol mismatch for {root}: {key}={value.get(key)!r}, expected {wanted!r}"
             )
+    if experiment != "softness":
+        validate_initialization_settings(value)
     return value
 
 
@@ -256,6 +266,17 @@ def measure(file: Path, sequence: str, chain: str = "B") -> dict:
 
 def measure_softness(root: Path) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Measure individual forwards before averaging the two replicates per input."""
+    forwards = measure_softness_forwards(root)
+    means = (
+        forwards.groupby(["input_index", "mode", "dropout"])[["helix", "sheet", "coil"]]
+        .mean()
+        .reset_index()
+    )
+    return means, forwards
+
+
+def measure_softness_forwards(root: Path) -> pd.DataFrame:
+    """Measure each preserved prediction, retaining input and replicate identities."""
     settings = protocol(root, "softness")
     rows = []
     for index in range(settings["inputs"]):
@@ -285,13 +306,7 @@ def measure_softness(root: Path) -> tuple[pd.DataFrame, pd.DataFrame]:
                             ),
                         }
                     )
-    forwards = pd.DataFrame(rows)
-    means = (
-        forwards.groupby(["input_index", "mode", "dropout"])[["helix", "sheet", "coil"]]
-        .mean()
-        .reset_index()
-    )
-    return means, forwards
+    return pd.DataFrame(rows)
 
 
 def trace(path: Path, steps: int) -> pd.DataFrame:
@@ -467,6 +482,9 @@ def prepare_inputs(root: Path, experiment: str, temperature: int) -> Path:
     protocol["purpose"] = "Fresh reproduction; outcomes are not seed-reproducible"
     prior = from_reference() if experiment != "softness" else None
     if prior is not None:
+        validate_initialization_settings(protocol)
+        protocol["initialization"] = "q + b_i*(onehot(chosen_aa)-uniform19)"
+        protocol["boost_rule"] = "max(0, max_other(q) - q(chosen_aa) + probability_margin)"
         protocol["prior_sha256"] = hashlib.sha256(
             json.dumps(prior, sort_keys=True).encode()
         ).hexdigest()
@@ -485,7 +503,13 @@ def prepare_inputs(root: Path, experiment: str, temperature: int) -> Path:
             name: hashlib.sha256(data).hexdigest() for name, data in bundles.items()
         }
     elif experiment == "short":
-        save(directory / "inputs.json", paired_inputs())
+        bundles = paired_inputs()
+        for item in bundles:
+            for arm in ("helix", "sheet"):
+                matched_probabilities(
+                    prior[arm], item["sequence"], margin=protocol["probability_margin"]
+                )
+        save(directory / "inputs.json", bundles)
         protocol["bundles_sha256"] = digest(directory / "inputs.json")
     else:
         import torch
@@ -496,11 +520,11 @@ def prepare_inputs(root: Path, experiment: str, temperature: int) -> Path:
         initial = trace[trace["step (index)"] == 0].set_index("seed").sort_index()
         if list(initial.index) != list(range(protocol["n_seeds"])):
             raise ValueError(f"Expected {protocol['n_seeds']} baseline initial sequences")
-        q, boost = tempered_sheet(prior, temperature)
+        q = tempered_sheet(prior, temperature)
         bundles = []
         for seed, row in initial.iterrows():
             sequence = row["binder sequence"]
-            matched_probabilities(q, sequence, boost)
+            matched_probabilities(q, sequence, margin=protocol["probability_margin"])
             item = {"seed": int(seed), "initial_sequence": sequence}
             if temperature != 1:
                 t1 = torch.load(
@@ -522,10 +546,8 @@ def prepare_inputs(root: Path, experiment: str, temperature: int) -> Path:
             {
                 "arm": "sheet_prior" if temperature == 1 else f"sheet_prior_t{temperature}",
                 "initialization_temperature": temperature,
-                "boost": boost,
                 "aa_order": prior["amino_acid_order"],
                 "inputs_sha256": digest(directory / "inputs.json"),
-                "initialization": "q_T + b_T*(onehot(saved_aa)-uniform19)",
                 "matching": (
                     "Baseline hard sequences and lengths; T=2 and T=4 reuse T=1 atom features"
                 ),
@@ -559,6 +581,13 @@ def prepared_jobs(root: Path, experiment: str, temperature: int) -> tuple[dict, 
         experiment == "full" and protocol["initialization_temperature"] != temperature
     ):
         raise ValueError("Prepared protocol does not match the requested experiment")
+    recorded_id = protocol["protocol_id"]
+    original = {k: v for k, v in protocol.items() if k != "protocol_id"}
+    actual_id = hashlib.sha256(json.dumps(original, sort_keys=True).encode()).hexdigest()[:16]
+    if recorded_id != actual_id:
+        raise ValueError("Prepared protocol changed; prepare inputs in a new --root")
+    if experiment != "softness":
+        validate_initialization_settings(protocol)
     prior = from_reference() if experiment != "softness" else None
     if prior is not None:
         current = hashlib.sha256(json.dumps(prior, sort_keys=True).encode()).hexdigest()
@@ -598,15 +627,17 @@ def prepared_jobs(root: Path, experiment: str, temperature: int) -> tuple[dict, 
     if digest(inputs) != expected:
         raise ValueError("Prepared inputs changed")
     if experiment == "full":
-        q, boost = tempered_sheet(prior, temperature)
-        protocol = {**protocol, "sheet_pdf": q.tolist(), "boost": boost}
+        q = tempered_sheet(prior, temperature)
+        protocol = {**protocol, "sheet_pdf": q.tolist()}
+    else:
+        protocol = {**protocol, "priors": {arm: prior[arm] for arm in ("helix", "sheet")}}
     for item in read(inputs):
         if experiment == "short":
             bundle = {
                 **item,
                 **{
                     arm: matched_probabilities(
-                        prior[arm], item["sequence"], protocol["epsilon"]
+                        prior[arm], item["sequence"], margin=protocol["probability_margin"]
                     ).tolist()
                     for arm in ("helix", "sheet")
                 },

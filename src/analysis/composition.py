@@ -7,6 +7,7 @@ screening summaries are derived in memory. No measurement cache is read or writt
 from __future__ import annotations
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 from analysis import paths, secondary_structure
@@ -90,7 +91,7 @@ def is_available(target_key: str, arm: str) -> bool:
     )
 
 
-def load(target_key: str, arm: str) -> pd.DataFrame:
+def measure_campaign(target_key: str, arm: str) -> pd.DataFrame:
     """Recalculate composition from saved model outputs without running a model."""
     if not is_available(target_key, arm):
         from analysis import deposit
@@ -101,6 +102,34 @@ def load(target_key: str, arm: str) -> pd.DataFrame:
         arm,
         paths.campaign_complexes(target_key, arm),
         paths.campaign_results(target_key, arm),
+    )
+
+
+def load(target_key: str, arm: str) -> pd.DataFrame:
+    """Compatibility entry point for measuring a preserved campaign."""
+    return measure_campaign(target_key, arm)
+
+
+def summarize_by_length(values: pd.Series, lengths: pd.Series, edges: np.ndarray) -> pd.DataFrame:
+    """Chain-weighted mean, standard error, and count in left-closed length bins.
+
+    Include the upper endpoint of the final bin. Standard errors use the
+    sample standard deviation across chains, not residues.
+    """
+    inclusive_edges = np.asarray(edges, dtype=float).copy()
+    inclusive_edges[-1] = np.nextafter(inclusive_edges[-1], np.inf)
+    binned = pd.cut(lengths, bins=inclusive_edges, right=False)
+    grouped = values.groupby(binned, observed=False)
+    counts = grouped.size()
+    means = grouped.mean()
+    errors = grouped.std(ddof=1) / np.sqrt(counts.where(counts > 0))
+    return pd.DataFrame(
+        {
+            "centre": [interval.mid for interval in means.index],
+            "mean": means.to_numpy(),
+            "error": errors.to_numpy(),
+            "n": counts.to_numpy(),
+        }
     )
 
 

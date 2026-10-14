@@ -65,11 +65,23 @@ unsteered campaign's initial hard sequences. Collect every T=1 run before
 preparing T=2 or T=4: those conditions reuse the exact T=1 atom-feature tensors.
 Pass `--temperature 2` or `--temperature 4` to each of the three commands.
 
-To preserve the reported runs, use a new absolute `--root` for each fresh
-initialization study and pass it consistently to prepare, spawn, and collect.
-Preparation refuses to overwrite an existing protocol. New jobs use the shared
-`manifest.csv` format; collection also reads historical `calls.json` manifests.
-Existing data directories and model files are retained without migration.
+Use an absolute `--root` for each initialization study and pass it consistently
+to prepare, spawn, and collect. Preparation refuses to overwrite an existing
+protocol. Jobs use the shared `manifest.csv` format.
+
+Fresh short and full initialization runs use each prior's smallest nonnegative
+boost at each position. With probability margin `delta = 0.001`, the boost is
+`max(0, max_other(q) - q(chosen) + delta)`. The chosen probability gains
+`18 * boost / 19`; every other allowed amino acid loses `boost / 19`. A chosen
+identity that already leads by the margin leaves the prior unchanged. Cysteine
+stays excluded. Invalid priors that would produce nonpositive probabilities are
+rejected rather than clipped or renormalized.
+
+The helix and sheet priors get independently calculated boosts while retaining
+the same initial discrete sequences. Tempering is applied to the sheet prior
+first, then boosts are recalculated. Both workers use the same probability and
+float32 logit-conversion code. The probability margin is recorded with the
+experiment settings.
 
 The standard design worker handles loss-steered designs and prior-initialized
 trajectories. The fixed-input screen uses a separate worker class within the same

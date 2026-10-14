@@ -1,6 +1,9 @@
 """The maintained workflow must prepare matched inputs without private EDA files."""
 
 import io
+import math
+import runpy
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -11,6 +14,7 @@ from analysis import paths, targets
 from analysis.priors import (
     AA,
     matched_probabilities,
+    minimum_boosts,
     paired_inputs,
     tempered_sheet,
 )
@@ -31,32 +35,126 @@ def prior():
 def test_temperature_preserves_argmax_and_increases_softness(prior):
     entropy, boosts = [], []
     for temperature in (1, 2, 4):
-        q, boost = tempered_sheet(prior, temperature)
-        p = matched_probabilities(q, "".join(AA), boost)
+        q = tempered_sheet(prior, temperature)
+        p = matched_probabilities(q, "".join(AA))
         np.testing.assert_array_equal(p.argmax(-1), np.arange(19))
         np.testing.assert_allclose(p.sum(-1), 1)
         assert (p > 0).all()
         entropy.append(float(-(p * np.log2(p)).sum(-1).mean()))
-        boosts.append(boost)
+        boosts.append(minimum_boosts(q, "".join(AA)).mean())
     assert entropy[0] < entropy[1] < entropy[2]
-    assert boosts[0] == 0.12 and boosts[0] > boosts[1] > boosts[2]
+    assert boosts[0] > boosts[1] > boosts[2]
 
 
 def test_paired_priors_have_identical_discrete_inputs(prior):
     bundles = paired_inputs()
     assert len(bundles) == 5
     for bundle in bundles:
-        h, e = (
-            matched_probabilities(prior[a], bundle["sequence"], 0.12) for a in ("helix", "sheet")
-        )
+        h, e = (matched_probabilities(prior[a], bundle["sequence"]) for a in ("helix", "sheet"))
         np.testing.assert_array_equal(h.argmax(-1), e.argmax(-1))
         assert h.shape == e.shape == (120, 19)
         assert "".join(AA[i] for i in h.argmax(-1)) == bundle["sequence"]
-        np.testing.assert_allclose(
-            h - e,
-            np.broadcast_to(np.asarray(prior["helix"]) - prior["sheet"], h.shape),
-            atol=1e-15,
+        # Each prior gets its own adjustment, even with identical hard identities.
+        assert not np.allclose(
+            minimum_boosts(prior["helix"], bundle["sequence"]),
+            minimum_boosts(prior["sheet"], bundle["sequence"]),
         )
+
+
+@pytest.mark.parametrize("arm", ["helix", "sheet"])
+def test_boost_is_minimal_and_already_favored_identity_is_unchanged(prior, arm):
+    q = np.asarray(prior[arm])
+    margin = targets.INITIALIZATION_MARGIN
+    sequence = "".join(AA)
+    original = q.copy()
+    boosts = minimum_boosts(q, sequence)
+    p = matched_probabilities(q, sequence)
+    np.testing.assert_array_equal(q, original)
+    np.testing.assert_allclose(p.sum(-1), 1)
+    for i, boost in enumerate(boosts):
+        gap = p[i, i] - np.delete(p[i], i).max()
+        assert gap >= margin - 1e-14
+        if boost == 0:
+            np.testing.assert_array_equal(p[i], q)
+        else:
+            assert gap == pytest.approx(margin)
+            smaller = q + boost / 2 * (np.eye(19)[i] - 1 / 19)
+            assert smaller[i] - np.delete(smaller, i).max() < margin
+    assert boosts[q.argmax()] == 0
+
+
+def test_uniform_prior_and_tied_maximum():
+    q = np.full(19, 1 / 19)
+    p = matched_probabilities(q, "AI")
+    assert p[0, AA.index("A")] - p[0, AA.index("I")] == pytest.approx(0.001)
+    assert p[1, AA.index("I")] - p[1, AA.index("A")] == pytest.approx(0.001)
+    q[[0, 1]] += 0.01
+    q[2:] -= 0.02 / 17
+    p = matched_probabilities(q, "A")
+    assert p[0, 0] - p[0, 1] == pytest.approx(0.001)
+
+
+@pytest.mark.parametrize("margin", [0, -0.001, float("nan"), float("inf")])
+def test_invalid_margin_is_rejected(prior, margin):
+    with pytest.raises(ValueError, match="margin"):
+        matched_probabilities(prior["helix"], "I", margin=margin)
+
+
+@pytest.mark.parametrize("sequence", ["", "C", "X", "a"])
+def test_invalid_sequence_is_rejected(prior, sequence):
+    with pytest.raises(ValueError, match="sequence"):
+        matched_probabilities(prior["helix"], sequence)
+
+
+@pytest.mark.parametrize(
+    "q",
+    [
+        np.ones(18) / 18,
+        np.ones(19),
+        np.zeros(19),
+        np.full(19, np.nan),
+        np.full(19, np.inf),
+        np.array([-1] + [2 / 18] * 18),
+    ],
+)
+def test_invalid_prior_is_rejected(q):
+    with pytest.raises(ValueError):
+        matched_probabilities(q, "I")
+
+
+def test_infeasible_boost_is_rejected_without_clipping():
+    q = np.array([0.98] + [0.02 / 18] * 18)
+    with pytest.raises(ValueError, match="nonpositive"):
+        matched_probabilities(q, "I")
+
+
+def test_too_small_margin_is_rejected():
+    with pytest.raises(ValueError, match="too small"):
+        matched_probabilities(np.full(19, 1 / 19), "I", margin=1e-30)
+
+
+@pytest.mark.parametrize("arm", ["helix", "sheet"])
+@pytest.mark.parametrize("temperature", [1, 2, 4])
+def test_worker_logit_conversion_preserves_probabilities_and_identities(prior, arm, temperature):
+    module = Path(__file__).resolve().parents[1] / "src/analysis/design/initialization.py"
+    prior_logits = runpy.run_path(str(module))["prior_logits"]
+    # Model order differs from the prior order; cysteine is excluded from the prior.
+    order = list(reversed("ACDEFGHIKLMNPQRSTVWY"))
+    sequence = "".join(AA)
+    q = tempered_sheet({**prior, "sheet": prior[arm]}, temperature)
+    t0 = 0.01 + 0.99 * 0.5 * (1 + math.cos(math.pi / 150))
+    logits, p = prior_logits(q, sequence, order, t0, margin=targets.INITIALIZATION_MARGIN)
+    assert logits.dtype == p.dtype == torch.float32
+    recovered = (logits / t0).softmax(-1)
+    np.testing.assert_allclose(
+        recovered[0, :, [order.index(aa) for aa in AA]],
+        matched_probabilities(q, sequence),
+        atol=1e-7,
+        rtol=1e-6,
+    )
+    assert torch.equal(recovered.argmax(-1)[0], torch.tensor([order.index(aa) for aa in sequence]))
+    assert torch.equal(recovered.to(torch.bfloat16).argmax(-1), recovered.argmax(-1))
+    assert recovered[..., order.index("C")].eq(0).all()
 
 
 def test_prepare_full_temperatures_in_checkout_without_exploratory(tmp_path, monkeypatch, prior):
@@ -77,6 +175,7 @@ def test_prepare_full_temperatures_in_checkout_without_exploratory(tmp_path, mon
     root = tmp_path / "runs"
     short = workflow.prepare_inputs(root, "short", 1)
     assert len(workflow.read(short / "inputs.json")) == 5
+    assert workflow.protocol(short, "short")["probability_margin"] == 0.001
     t1 = workflow.prepare_inputs(root, "full", 1)
     inputs = workflow.read(t1 / "inputs.json")
     for item in inputs:
@@ -90,6 +189,8 @@ def test_prepare_full_temperatures_in_checkout_without_exploratory(tmp_path, mon
         out = workflow.prepare_inputs(root, "full", temperature)
         protocol = workflow.read(out / "protocol.json")
         assert protocol["initialization_temperature"] == temperature
+        assert protocol["probability_margin"] == 0.001
+        assert "boost" not in protocol and "epsilon" not in protocol
         assert protocol["seeds"] == list(range(30))
         for item in workflow.read(out / "inputs.json"):
             blob = (out / "inputs" / f"seed{item['seed']:02d}-features.pt").read_bytes()
@@ -195,9 +296,16 @@ def test_shared_cli_prepares_submits_and_collects_initialization(
             assert method == "design_pair"
             h, e = (np.asarray(kwargs["bundle"][arm]) for arm in ("helix", "sheet"))
             np.testing.assert_array_equal(h.argmax(-1), e.argmax(-1))
+            for arm in ("helix", "sheet"):
+                np.testing.assert_allclose(
+                    kwargs["bundle"][arm],
+                    matched_probabilities(prior[arm], kwargs["bundle"]["sequence"]),
+                )
+                assert kwargs["protocol"]["priors"][arm] == prior[arm]
     elif experiment == "full":
         assert all(method == "design_prior" for method, _ in submitted)
         assert all(kwargs["protocol"]["steps"] == 150 for _, kwargs in submitted)
+        assert all(kwargs["protocol"]["probability_margin"] == 0.001 for _, kwargs in submitted)
     else:
         assert [method for method, _ in submitted] == ["screen"] * 10 + ["controls"]
 
@@ -207,6 +315,16 @@ def test_prepared_prior_change_is_rejected_before_submission(tmp_path, monkeypat
     workflow.prepare_inputs(tmp_path, "short", 1)
     prior["sheet"] = list(reversed(prior["sheet"]))
     with pytest.raises(ValueError, match="Reference prior changed"):
+        workflow.prepared_jobs(tmp_path, "short", 1)
+
+
+def test_prepared_margin_change_is_rejected_before_submission(tmp_path, monkeypatch, prior):
+    monkeypatch.setattr(workflow, "from_reference", lambda: prior)
+    directory = workflow.prepare_inputs(tmp_path, "short", 1)
+    protocol = workflow.read(directory / "protocol.json")
+    protocol["probability_margin"] *= 2
+    workflow.save(directory / "protocol.json", protocol)
+    with pytest.raises(ValueError, match="Prepared protocol changed"):
         workflow.prepared_jobs(tmp_path, "short", 1)
 
 
