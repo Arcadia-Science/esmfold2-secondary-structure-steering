@@ -273,7 +273,7 @@ def test_stale_source_prevents_launch_before_any_remote_call(tmp_path, monkeypat
     [("softness", 1), ("short", 1), ("short", 1.5), ("full", 1), ("full", 1.5)],
 )
 def test_shared_cli_prepares_submits_and_collects_initialization(
-    tmp_path, monkeypatch, prior, experiment, temperature
+    tmp_path, monkeypatch, prior, experiment, temperature, trajectory_archive
 ):
     import json
     import zipfile
@@ -294,6 +294,16 @@ def test_shared_cli_prepares_submits_and_collects_initialization(
     monkeypatch.setattr(
         modal.Function, "from_name", lambda app, name: SimpleNamespace(remote=lambda: screen_inputs)
     )
+    if experiment == "short":
+        monkeypatch.setitem(
+            targets.INITIALIZATION_SPECS,
+            "short",
+            {
+                **targets.INITIALIZATION_SPECS["short"],
+                "pairs": 2,
+                "updates": 2,
+            },
+        )
     submitted, requested, options, instances = [], [], [], []
 
     class RemoteClass:
@@ -324,7 +334,17 @@ def test_shared_cli_prepares_submits_and_collects_initialization(
     monkeypatch.setattr(
         modal.FunctionCall,
         "from_id",
-        lambda _: SimpleNamespace(get=lambda **kwargs: payload.getvalue()),
+        lambda call_id: SimpleNamespace(
+            get=lambda **kwargs: (
+                trajectory_archive(
+                    submitted[int(call_id.split("-")[-1]) - 1][1]["protocol"],
+                    seed=submitted[int(call_id.split("-")[-1]) - 1][1]["bundle"]["pair"],
+                    sequence=submitted[int(call_id.split("-")[-1]) - 1][1]["bundle"]["sequence"],
+                )
+                if experiment == "short"
+                else payload.getvalue()
+            )
+        ),
     )
     root = tmp_path / "runs"
     if experiment == "full" and temperature != 1:
@@ -341,7 +361,7 @@ def test_shared_cli_prepares_submits_and_collects_initialization(
     for verb in ["prepare", "spawn", "spawn", "collect", "collect"]:
         result = runner.invoke(campaign.app, [verb, *args])
         assert result.exit_code == 0, (result.output, result.exception)
-    expected = {"softness": 11, "short": 10, "full": 30}[experiment]
+    expected = {"softness": 11, "short": 2, "full": 30}[experiment]
     assert len(submitted) == expected
     expected_class = "FixedInputModal" if experiment == "softness" else campaign.REMOTE_CLASS
     assert all(item == (modal_app.APP_NAME, expected_class) for item in requested)
@@ -355,8 +375,14 @@ def test_shared_cli_prepares_submits_and_collects_initialization(
     frame = pd.read_csv(directory / "manifest.csv")
     assert len(frame) == expected
     assert not (directory / "calls.json").exists()
-    for name in frame.run:
-        assert (directory / name / "model.pdb").read_text() == "model output"
+    if experiment == "short":
+        for arm in targets.short_trajectory_arms(temperature).values():
+            result = pd.read_parquet(paths.campaign_results("pdl1_igv", arm))
+            assert len(result) == expected and result.arm.eq(arm).all()
+            assert not paths.campaign_complexes("pdl1_igv", arm).exists()
+    else:
+        for name in frame.run:
+            assert (directory / name / "model.pdb").read_text() == "model output"
     protocol = json.loads((directory / "protocol.json").read_text())
     assert protocol["app"] == modal_app.APP_NAME
     if experiment != "softness":
@@ -387,49 +413,6 @@ def test_shared_cli_prepares_submits_and_collects_initialization(
         assert all(kwargs["protocol"]["sheet_pdf"] == prior["sheet"] for _, kwargs in submitted)
     else:
         assert [method for method, _ in submitted] == ["screen"] * 10 + ["controls"]
-
-
-@pytest.mark.parametrize(
-    "mismatch", [None, "binder sequence", "inversion model", "temperature (0-1)"]
-)
-def test_short_measurements_include_uniform_and_validate_all_arms(tmp_path, monkeypatch, mismatch):
-    settings = {
-        **targets.INITIALIZATION_SPECS["short"],
-        "pairs": 1,
-        "updates": 2,
-    }
-    monkeypatch.setitem(targets.INITIALIZATION_SPECS, "short", settings)
-    workflow.save(tmp_path / "protocol.json", {**settings, "initialization_temperature": 1})
-    monkeypatch.setattr(
-        workflow,
-        "measure",
-        lambda *args: {"helix": 0.2, "sheet": 0.3, "coil": 0.5, "geometry_pass": True},
-    )
-    for arm in settings["arms"]:
-        folder = tmp_path / "runs/pair00" / arm
-        folder.mkdir(parents=True)
-        frame = pd.DataFrame(
-            {
-                "step (index)": [0, 1],
-                "binder sequence": ["AI", "IV"],
-                "steering_loss (dimensionless)": 0.0,
-                "inversion model": ["model1", "model2"],
-                "temperature (0-1)": [1.0, 0.99],
-                "helix_mean (0-1)": [0.2, 0.3],
-                "sequence entropy (bits)": [4.24, 4.2],
-            }
-        )
-        if arm == "sheet" and mismatch is not None:
-            frame.loc[0, mismatch] = 0.5 if mismatch == "temperature (0-1)" else "DIFFERENT"
-        frame.to_csv(folder / "step_trace.csv", index=False)
-    if mismatch is not None:
-        with pytest.raises(ValueError, match="Unmatched"):
-            workflow.measure_short_trajectories(tmp_path)
-    else:
-        measured = workflow.measure_short_trajectories(tmp_path)
-        assert len(measured) == 6
-        assert set(measured.arm) == {"uniform", "helix", "sheet"}
-        assert measured.groupby("arm").step.apply(list).tolist() == [[0, 1]] * 3
 
 
 def test_prepared_prior_change_is_rejected_before_submission(tmp_path, monkeypatch, prior):

@@ -178,7 +178,7 @@ def test_collection_reads_historical_manifest_and_preserves_failed_jobs(tmp_path
 
     import modal
 
-    directory = tmp_path / "short"
+    directory = tmp_path / "softness"
     directory.mkdir()
     legacy = {name: {"call_id": name} for name in ["runs/pair00", "runs/pair01", "runs/pair02"]}
     manifest = directory / "calls.json"
@@ -201,11 +201,11 @@ def test_collection_reads_historical_manifest_and_preserves_failed_jobs(tmp_path
         return SimpleNamespace(get=get)
 
     monkeypatch.setattr(modal.FunctionCall, "from_id", from_id)
-    campaign.collect_initialization(tmp_path, "short", 1)
+    campaign.collect_initialization(tmp_path, "softness", 1)
     assert (directory / "runs/pair00/helix/model.pdb").read_text() == "preserved model output"
     assert not (directory / "runs/pair01/collected.json").exists()
     assert not (directory / "runs/pair02/collected.json").exists()
-    campaign.collect_initialization(tmp_path, "short", 1)
+    campaign.collect_initialization(tmp_path, "softness", 1)
     assert polled.count("runs/pair00") == 1
     assert manifest.read_bytes() == before
     assert not (directory / "manifest.csv").exists()

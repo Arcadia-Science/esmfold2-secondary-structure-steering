@@ -189,7 +189,42 @@ def load_campaign(target_key: str, arm: str) -> pd.DataFrame:
             f"campaign:\n"
             f"    python -m analysis.campaign run --targets {target_key} --arms {arm}"
         )
-    return pd.read_parquet(path)
+    result = pd.read_parquet(path)
+    if not result.target.eq(target_key).all() or not result.arm.eq(arm).all():
+        raise ValueError(f"Trace identities do not match campaign: {path}")
+    return result
+
+
+def validate_steps(trace: pd.DataFrame, *, n_seeds: int, steps: int) -> None:
+    """Require each expected seed and step exactly once."""
+    if trace.duplicated(["seed", "step (index)"]).any():
+        raise ValueError("Duplicate trajectory steps")
+    if set(trace.seed) != set(range(n_seeds)):
+        raise ValueError("Missing or unexpected trajectory seeds")
+    for _, frame in trace.groupby("seed"):
+        if sorted(frame["step (index)"].tolist()) != list(range(steps)):
+            raise ValueError("Missing or unexpected trajectory steps")
+
+
+def validate_matching(trace: pd.DataFrame) -> None:
+    """Check a declared matched input set, including model and annealing schedules.
+
+    Nominally equal seeds alone do not establish matched inputs. The collector
+    records the shared input-set identity only after checking saved tensors.
+    """
+    arms = set(trace.arm)
+    if len(arms) < 2 or trace["matched input set"].isna().any():
+        raise ValueError("Expected at least two arms with declared matched inputs")
+    for _, group in trace.groupby(["target", "matched input set", "seed"]):
+        if set(group.arm) != arms:
+            raise ValueError("Incomplete matched input group")
+        first = group[group["step (index)"] == 0]
+        if len(first) != len(arms) or first["binder sequence"].nunique() != 1:
+            raise ValueError("Unmatched initial sequences")
+        for column in ("inversion model", "temperature (0-1)"):
+            values = group.pivot(index="step (index)", columns="arm", values=column)
+            if values.isna().any().any() or not values.nunique(axis=1).eq(1).all():
+                raise ValueError(f"Unmatched {column}")
 
 
 def load_all(target_keys: list[str], arms: list[str]) -> pd.DataFrame:

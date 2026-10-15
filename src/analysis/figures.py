@@ -1468,6 +1468,8 @@ class TraceMetric:
 
 
 TRACE_METRICS: dict[str, TraceMetric] = {
+    "helix": TraceMetric("helix", "helix (fraction 0-1)", "Residues assigned helix (%)"),
+    "sheet": TraceMetric("sheet", "sheet (fraction 0-1)", "Residues assigned sheet (%)"),
     "helix_mean": TraceMetric(
         key="helix_mean",
         column="helix_mean (0-1)",
@@ -1484,6 +1486,121 @@ TRACE_METRICS: dict[str, TraceMetric] = {
         axis_label="sequence entropy (bits/residue)",
     ),
 }
+
+
+def _prior_style(arm: str) -> tuple[str, str]:
+    from analysis.targets import arm as get_arm
+
+    spec = get_arm(arm)
+    colors = {"uniform": "#60676C", "helix": HELIX_COLOR, "sheet": "#347DA8"}
+    return spec.label, colors[spec.initialization_prior]
+
+
+def _trajectory_axis(axis, metric: str) -> None:
+    axis.spines[["top", "right"]].set_visible(False)
+    axis.grid(axis="y", color="#E7E7E7", lw=0.6)
+    axis.set_axisbelow(True)
+    axis.yaxis.set_major_locator(MaxNLocator(5))
+    axis.set_ylabel(TRACE_METRICS[metric].axis_label)
+    if metric in {"helix", "sheet"}:
+        axis.set(ylim=(-2, 100), yticks=[0, 20, 40, 60, 80, 100])
+    elif metric == "helix_mean":
+        axis.set_ylim(0, 1)
+
+
+def prior_trajectory_panel(
+    trace: pd.DataFrame,
+    means: pd.DataFrame,
+    arms: list[str],
+    metric: str,
+    *,
+    individuals: bool = True,
+    legend: bool = False,
+) -> plt.Figure:
+    """One panel from measured traces and caller-computed means indexed by arm/step.
+
+    Filtering coordinate readouts, selecting steps and aggregating matched
+    starts belong in the calling analysis. Separate figures allow Quarto to
+    arrange panels and supply their captions.
+    """
+    spec = TRACE_METRICS[metric]
+    scale = 100 if metric in {"helix", "sheet"} else 1
+    fig, axis = plt.subplots(figsize=(6, 4), layout="constrained")
+    for arm in arms:
+        label, color = _prior_style(arm)
+        if individuals:
+            for _, group in trace[trace.arm == arm].groupby("seed"):
+                group = group.sort_values("step (index)")
+                axis.plot(
+                    group["step (index)"],
+                    scale * group[spec.column],
+                    color=color,
+                    alpha=0.18,
+                    lw=0.9,
+                )
+        mean = means.xs(arm, level="arm")[spec.column].sort_index()
+        axis.plot(
+            mean.index,
+            scale * mean,
+            color=color,
+            lw=2.7,
+            label=label,
+            marker=None if individuals else "o",
+            ms=5,
+        )
+    _trajectory_axis(axis, metric)
+    axis.set_xlabel("Sequence updates completed")
+    axis.xaxis.set_major_locator(MaxNLocator(integer=True))
+    if metric == "entropy":
+        from analysis.priors import AA
+
+        uniform = np.log2(len(AA))
+        axis.axhline(uniform, color="#999999", lw=1, ls=(0, (6, 4)), zorder=0)
+        axis.annotate(
+            f"Uniform: {uniform:.3f} bits",
+            xy=(0.98, uniform),
+            xycoords=("axes fraction", "data"),
+            xytext=(0, 4),
+            textcoords="offset points",
+            ha="right",
+            fontsize=10,
+        )
+        axis.set_ylim(top=uniform + 0.1)
+    if legend:
+        axis.legend(
+            frameon=True,
+            facecolor="white",
+            edgecolor="none",
+            framealpha=0.9,
+            loc="lower left",
+            fontsize=11,
+        )
+    return fig
+
+
+def matched_composition_panel(
+    final: pd.DataFrame, means: pd.DataFrame, arms: list[str], metric: str
+) -> plt.Figure:
+    """Connect matched starts at one caller-selected state; black bars show supplied means."""
+    if metric not in {"helix", "sheet"}:
+        raise ValueError("Expected helix or sheet composition")
+    column = TRACE_METRICS[metric].column
+    values = 100 * final.pivot(index="seed", columns="arm", values=column).reindex(columns=arms)
+    fig, axis = plt.subplots(figsize=(5.5, 4.5), layout="constrained")
+    labels, colors = zip(*[_prior_style(arm) for arm in arms], strict=True)
+    for offset, (_, row) in zip(
+        np.linspace(-0.18, 0.18, len(values)), values.iterrows(), strict=True
+    ):
+        x = np.arange(len(arms)) + offset
+        axis.plot(x, row.to_numpy(), color="#9B9B9B", alpha=0.6, lw=0.9, zorder=1)
+        axis.scatter(x, row.to_numpy(), c=colors, s=42, zorder=2)
+    for x, arm in enumerate(arms):
+        mean = 100 * means.loc[arm, column]
+        axis.plot([x - 0.20, x + 0.20], [mean, mean], color="black", lw=2.5, zorder=3)
+        axis.text(x + 0.24, max(mean, 1.5), f"{mean:.1f}%", va="center", fontsize=11)
+    _trajectory_axis(axis, metric)
+    axis.set(xticks=range(len(arms)), xticklabels=labels, xlim=(-0.4, len(arms) - 0.3))
+    return fig
 
 
 SEED_LINE_WIDTH = 0.8

@@ -26,8 +26,8 @@ by the publication template, so publishing does not rerun the analysis.
 - `data/targets`: tracked target sequences and experimental coordinates.
 - `data/campaigns`: ignored campaign structures, model scores, traces and protocols.
 - `data/reference`: ignored frozen search results, entry metadata and RCSB coordinates.
-- `data/initialization`: ignored original initialization runs, including protocols,
-  exact input tensors, model outputs and execution provenance.
+- `data/initialization`: matched-input preparation and the fixed-input/full-run
+  experiments. Collected short trajectories use the shared campaign layout.
 
 ## Generate model outputs
 
@@ -74,6 +74,42 @@ spawn, and collect. The publication's full-run grid remains T=1, 2, and 4.
 Use an absolute `--root` for each initialization study and pass it consistently
 to prepare, spawn, and collect. Preparation refuses to overwrite an existing
 protocol. Jobs use the shared `manifest.csv` format.
+
+Short trajectories collect into the `init_uniform_t1_short`, `init_helix_t1_short`,
+and `init_sheet_t1_short` arms (with the temperature reflected in the name).
+Each campaign preserves its original inputs, saved logits and atom features,
+model source, audits, raw traces, and per-step structures. The collected trace
+uses the matched-start index as `seed` and retains the worker's `optimization seed`
+separately. These runs have no final confidence scores or selected structure.
+The campaign archive includes these inputs alongside the other campaign outputs.
+
+Measure them through the shared modules, keeping scientific choices visible:
+
+```python
+import pandas as pd
+from analysis import composition, figures, loss_trace
+from analysis.targets import INITIALIZATION_TARGET, SHORT_TRAJECTORY_ARMS
+
+trajectories = {}
+for arm in SHORT_TRAJECTORY_ARMS.values():
+    trajectories[arm] = composition.measure_steps(INITIALIZATION_TARGET, arm)
+trace = pd.concat(trajectories.values(), ignore_index=True)
+loss_trace.validate_matching(trace)
+
+# Exclude flagged coordinate readouts only from structure composition.
+fractions = [f"{state} (fraction 0-1)" for state in ("helix", "sheet", "coil")]
+trace.loc[~trace["geometry pass (bool)"], fractions] = float("nan")
+metrics = [*fractions, "helix_mean (0-1)", "sequence entropy (bits)"]
+means = trace.groupby(["arm", "step (index)"])[metrics].mean()
+figure = figures.prior_trajectory_panel(
+    trace, means, list(SHORT_TRAJECTORY_ARMS.values()), "sheet", legend=True
+)
+```
+
+States 0–39 are sampled before their corresponding update. Structure composition
+is recomputed from the saved coordinate readouts; entropy and the helicity proxy
+come from the independent optimizer trace. Plot helpers accept measured data and
+explicit means and return separate panels for Quarto.
 
 Short and full initialization runs first temper each prior as
 `q_T = normalize(q ** (1 / temperature))`. Temperature defaults to 1 (the

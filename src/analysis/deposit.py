@@ -8,6 +8,7 @@ study archive is published; importing or executing analysis never launches a GPU
 """
 
 from __future__ import annotations
+import json
 import urllib.request
 import zipfile
 from dataclasses import dataclass
@@ -149,7 +150,7 @@ def initialization_members(root: Path | None = None) -> list[Path]:
     from analysis.targets import INITIALIZATION_SPECS
 
     root = paths.INITIALIZATION if root is None else root
-    experiments = ["softness", "short"] + [
+    experiments = ["softness"] + [
         f"full-T{t}" for t in INITIALIZATION_SPECS["full"]["temperatures"]
     ]
     members = []
@@ -166,12 +167,10 @@ def initialization_members(root: Path | None = None) -> list[Path]:
         run_dirs = (
             sorted(directory.glob("input[0-9][0-9]"))
             if name == "softness"
-            else sorted((directory / "runs").glob("pair[0-9][0-9]"))
-            if name == "short"
             else sorted(directory.glob("seed[0-9][0-9]"))
         )
         expected = INITIALIZATION_SPECS["full" if name.startswith("full-") else name][
-            "n_seeds" if name.startswith("full-") else "pairs" if name == "short" else "inputs"
+            "n_seeds" if name.startswith("full-") else "inputs"
         ]
         if len(run_dirs) != expected:
             raise ValueError(f"Expected {expected} collected runs in {directory}")
@@ -231,9 +230,17 @@ def reference_members() -> list[Path]:
 def design_members() -> list[Path]:
     """Preserve the published campaigns' model outputs, never derived measurements."""
     from analysis.targets import N_SEEDS, publication_campaigns
+    from analysis.targets import arm as get_arm
 
     members = []
-    for target, arm in publication_campaigns():
+    campaigns = list(publication_campaigns())
+    for file in sorted(paths.CAMPAIGNS.glob("*__init_*_short/protocol.json")):
+        protocol = json.loads(file.read_text())
+        get_arm(protocol["arm"])
+        pair = (protocol["target"], protocol["arm"])
+        if pair not in campaigns:
+            campaigns.append(pair)
+    for target, arm in campaigns:
         directory = paths.campaign_dir(target, arm)
         required = [
             directory / name
@@ -243,9 +250,41 @@ def design_members() -> list[Path]:
                 "protocol.json",
             )
         ]
-        required.extend(
-            paths.campaign_complexes(target, arm) / f"seed{seed:02d}.pdb" for seed in range(N_SEEDS)
-        )
+        protocol_path = paths.campaign_protocol(target, arm)
+        protocol = json.loads(protocol_path.read_text()) if protocol_path.is_file() else {}
+        if protocol.get("output_kind") == "trajectory":
+            required.append(paths.campaign_manifest(target, arm))
+            for seed in range(protocol["n_seeds"]):
+                run = paths.campaign_run(target, arm, seed)
+                required.extend(
+                    run / name
+                    for name in (
+                        "initialization.pt",
+                        "audit.json",
+                        "protocol.json",
+                        "complete.json",
+                        "step_trace.csv",
+                        "readouts.csv",
+                    )
+                )
+                for step in range(protocol["sgd_steps"]):
+                    required.extend(
+                        [
+                            run / f"state{step:03d}.pt",
+                            paths.campaign_step_complexes(target, arm, seed)
+                            / f"step{step:03d}.pdb",
+                        ]
+                    )
+                required.extend(run.glob("*.py"))
+                required.extend(run.glob("*.jsonl"))
+                required.extend(run.glob("collected.json"))
+            required.extend((directory / "submission").glob("*.json"))
+            required.extend((directory / "submission").glob("*.csv"))
+        else:
+            required.extend(
+                paths.campaign_complexes(target, arm) / f"seed{seed:02d}.pdb"
+                for seed in range(N_SEEDS)
+            )
         missing = [p for p in required if not p.is_file()]
         if missing:
             raise FileNotFoundError(f"Incomplete campaign inputs: {missing[:5]}")

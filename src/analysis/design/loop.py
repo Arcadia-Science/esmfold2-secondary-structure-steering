@@ -178,6 +178,7 @@ def design_binder(
     initial_logits: torch.Tensor | None = None,
     initial_prepared: dict | None = None,
     step_observer: Callable[[dict], None] | None = None,
+    arm: str | None = None,
 ) -> tuple[
     list[str],
     Trajectory,
@@ -203,6 +204,8 @@ def design_binder(
     defaults to no steering at all. ``trace_path`` is where the per-step loss
     log is appended as JSON lines; the log is returned either way, so a path is
     only needed when a run has to survive its own process.
+    ``arm`` labels the experimental condition independently of its objective;
+    when omitted, log rows use the schedule's key.
 
     Exploratory callers may supply mutable ``initial_logits`` and matching
     discrete ``initial_prepared`` features. ``step_observer`` receives detached
@@ -376,7 +379,7 @@ def design_binder(
         )
         record = loss_trace.StepRecord(
             target=target_name,
-            arm=schedule.key,
+            arm=schedule.key if arm is None else arm,
             seed=seed,
             step=step,
             steps=steps,

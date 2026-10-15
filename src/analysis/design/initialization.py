@@ -14,7 +14,7 @@ import time
 import zipfile
 from pathlib import Path
 
-from analysis.targets import INITIALIZATION_SPECS, PRIMARY_CRITIC, SGD_STEPS
+from analysis.targets import INITIALIZATION_SPECS, PRIMARY_CRITIC, SGD_STEPS, short_trajectory_arms
 
 SETTINGS = INITIALIZATION_SPECS["softness"]
 
@@ -276,6 +276,7 @@ def design_pair(driver, audit, sources, bundle: dict, protocol: dict, archive) -
     temperature0 = 0.01 + 0.99 * 0.5 * (1 + math.cos(math.pi / protocol["annealing_horizon"]))
     probabilities, logits = {}, {}
     arms = protocol["arms"]
+    campaign_arms = short_trajectory_arms(protocol["initialization_temperature"])
     for arm in arms:
         init, p20 = prior_logits(
             protocol["priors"][arm],
@@ -343,6 +344,7 @@ def design_pair(driver, audit, sources, bundle: dict, protocol: dict, archive) -
             target_name=protocol["target"],
             target_sequence=target,
             binder_name="soft_prior",
+            arm=campaign_arms[arm],
             binder_sequence="#" * protocol["binder_length"],
             is_antibody=False,
             seed=81000 + index,

@@ -9,6 +9,8 @@ does not call this module. GPU reruns produce new samples, not exact replicas.
 from __future__ import annotations
 import io
 import json
+import shutil
+import tempfile
 import time
 import zipfile
 from collections.abc import Callable, Iterator
@@ -26,6 +28,7 @@ from analysis.targets import (
     N_SEEDS,
     SGD_STEPS,
     TARGET_SPECS,
+    short_trajectory_arms,
 )
 from analysis.targets import (
     arm as get_arm,
@@ -182,6 +185,10 @@ def spawn_campaign(
     """
     spec = get_target(target)
     arm_spec = get_arm(arm)
+    if arm_spec.initialization_prior is not None:
+        raise ValueError(
+            "Matched prior arms must be prepared and submitted together with --experiment short"
+        )
     manifest_path = paths.campaign_manifest(target, arm)
 
     import modal
@@ -307,7 +314,7 @@ class Collected:
     n_pending: int
     n_failed: int
     n_trace_rows: int
-    n_viable: int
+    n_viable: int | None
 
 
 def _write_step_complexes(target: str, arm: str, seed: int, blob: bytes) -> None:
@@ -329,6 +336,213 @@ def _write_step_complexes(target: str, arm: str, seed: int, blob: bytes) -> None
         (directory / f"step{step:03d}.pdb").write_text(pdb_text)
 
 
+def _register_short_campaigns(protocol: dict, manifest: pd.DataFrame) -> dict[str, str]:
+    """Represent a jointly submitted trio as three ordinary campaign arms."""
+    arms = short_trajectory_arms(protocol["initialization_temperature"])
+    seeds = manifest.run.str.extract(r"^runs/pair(\d+)$", expand=False)
+    if seeds.isna().any() or seeds.astype(int).duplicated().any():
+        raise ValueError("Invalid matched-run manifest")
+    shared = manifest.assign(seed=seeds.astype(int)).drop(columns="run")
+    if not set(shared.seed).issubset(range(protocol["pairs"])):
+        raise ValueError("Unexpected matched-run seeds")
+    for prior, arm in arms.items():
+        settings = {
+            "target": protocol["target"],
+            "arm": arm,
+            "output_kind": "trajectory",
+            "initialization_prior": prior,
+            "initialization_temperature": protocol["initialization_temperature"],
+            "n_seeds": protocol["pairs"],
+            "sgd_steps": protocol["updates"],
+            "matched_input_set": protocol["protocol_id"],
+            "source_protocol": protocol,
+        }
+        path = paths.campaign_protocol(protocol["target"], arm)
+        if path.is_file() and initialization.read(path) != settings:
+            raise ValueError(f"Campaign settings differ from the saved protocol: {path}")
+        initialization.save(path, settings)
+        saved = read_manifest(path.parent / "manifest.csv", key="seed")
+        for row in saved.itertuples(index=False):
+            found = shared.loc[shared.seed == row.seed, "call_id"]
+            if len(found) != 1 or found.iloc[0] != row.call_id:
+                raise ValueError(f"Campaign call IDs differ: {path.parent}")
+        shared.to_csv(path.parent / "manifest.csv", index=False)
+    return arms
+
+
+def _copy_preserved(source: Path, destination: Path) -> None:
+    """Copy original bytes, refusing to replace a different model output."""
+    if destination.is_file():
+        if source.read_bytes() != destination.read_bytes():
+            raise ValueError(f"Different model output already exists: {destination}")
+        return
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(source, destination)
+
+
+def _write_trajectory_result(
+    source: Path, target: str, arm: str, seed: int, protocol: dict
+) -> tuple[dict, pd.DataFrame]:
+    """Validate one saved trajectory, retain its inputs, and normalize its identity."""
+    import torch
+
+    prior = protocol["initialization_prior"]
+    folder = source / prior
+    record = initialization.read(folder / "complete.json")
+    original = protocol["source_protocol"]
+    for key, expected in {
+        "pair": seed,
+        "arm": prior,
+        "updates": protocol["sgd_steps"],
+        "annealing_horizon": original["annealing_horizon"],
+        "initialization_temperature": protocol["initialization_temperature"],
+        "probability_margin": original["probability_margin"],
+    }.items():
+        if record[key] != expected:
+            raise ValueError(f"Unexpected {key}: {folder}")
+    run_protocol = initialization.read(source / "protocol.json")
+    if any(run_protocol.get(key) != value for key, value in original.items()):
+        raise ValueError(f"Run protocol differs from submitted protocol: {source}")
+    trace = initialization.trace(folder / "step_trace.csv", protocol["sgd_steps"])
+    # The worker returns all arms together. Check their shared schedules before
+    # assigning a matched-set identity to any one campaign's rows.
+    paired = []
+    campaign_arms = short_trajectory_arms(protocol["initialization_temperature"])
+    for name in original["arms"]:
+        other = initialization.trace(source / name / "step_trace.csv", protocol["sgd_steps"])
+        if not other.arm.eq(campaign_arms[name]).all():
+            raise ValueError(f"Unexpected trajectory arm: {source / name / 'step_trace.csv'}")
+        paired.append(
+            other.assign(
+                seed=seed,
+                **{
+                    "matched input set": protocol["matched_input_set"],
+                },
+            )
+        )
+    loss_trace.validate_matching(pd.concat(paired, ignore_index=True))
+    if (
+        not trace.target.eq(target).all()
+        or not trace.seed.eq(record["optimization_seed"]).all()
+        or not trace["steering_loss (dimensionless)"].eq(0).all()
+    ):
+        raise ValueError(f"Unexpected objective or run identity: {folder}")
+    initial = torch.load(source / "initialization.pt", map_location="cpu", weights_only=True)
+    state = torch.load(folder / "state000.pt", map_location="cpu", weights_only=True)
+    sequence = initial["bundle"]["sequence"]
+    prepared = state["prepared"]
+    if (
+        initial["bundle"]["pair"] != seed
+        or record["shared_initial_sequence"] != sequence
+        or trace.iloc[0]["binder sequence"] != sequence
+        or prepared["seq_list"] != [original["target_sequence"] + "|" + sequence]
+        or initial["features"].keys() != prepared["inputs"].keys()
+        or any(
+            not torch.equal(value, prepared["inputs"][key])
+            for key, value in initial["features"].items()
+        )
+        or not torch.equal(initial["logits"][prior], state["logits"])
+    ):
+        raise ValueError(f"Unmatched initial sequence, features or logits: {folder}")
+    readouts = pd.read_csv(folder / "readouts.csv")
+    if sorted(readouts.step.tolist()) != list(range(protocol["sgd_steps"])):
+        raise ValueError(f"Incomplete coordinate readouts: {folder}")
+    required = [source / name for name in ("initialization.pt", "audit.json", "protocol.json")]
+    required += [
+        folder / f"{prefix}{step:03d}.{suffix}"
+        for step in range(protocol["sgd_steps"])
+        for prefix, suffix in (("state", "pt"), ("step", "pdb"))
+    ]
+    if missing := [path for path in required if not path.is_file()]:
+        raise FileNotFoundError(f"Incomplete trajectory: {missing[:5]}")
+    destination = paths.campaign_run(target, arm, seed)
+    for file in [*source.iterdir(), *folder.iterdir()]:
+        if not file.is_file():
+            continue
+        output = (
+            paths.campaign_step_complexes(target, arm, seed) / file.name
+            if file.parent == folder and file.suffix == ".pdb"
+            else destination / file.name
+        )
+        _copy_preserved(file, output)
+    trace = trace.assign(
+        target=target,
+        seed=seed,
+        **{
+            "optimization seed": record["optimization_seed"],
+            "matched input set": protocol["matched_input_set"],
+        },
+    )
+    return {**record, "seed": seed, "arm": arm, "target": target}, trace
+
+
+def _save_trajectories(target: str, arm: str, records: list, traces: list) -> None:
+    pd.DataFrame(records).sort_values("seed").to_parquet(
+        paths.campaign_results(target, arm), index=False
+    )
+    pd.concat(traces, ignore_index=True).sort_values(["seed", "step (index)"]).to_parquet(
+        paths.campaign_trace(target, arm), index=False
+    )
+
+
+def import_short_trajectories(directory: Path) -> list[Path]:
+    """Import already collected trios without contacting Modal or altering originals."""
+    protocol = initialization.read(directory / "protocol.json")
+    manifest = read_manifest(directory / "manifest.csv", key="run")
+    if set(manifest.run) != {f"runs/pair{i:02d}" for i in range(protocol["pairs"])}:
+        raise ValueError("Incomplete matched-run manifest")
+    target = protocol["target"]
+    arms = _register_short_campaigns(protocol, manifest)
+    collected = {}
+    for arm in arms.values():
+        settings = initialization.read(paths.campaign_protocol(target, arm))
+        records, traces = [], []
+        for seed in range(protocol["pairs"]):
+            record, trace = _write_trajectory_result(
+                directory / f"runs/pair{seed:02d}", target, arm, seed, settings
+            )
+            records.append(record)
+            traces.append(trace)
+        collected[arm] = (records, traces)
+        for name in ("inputs.json", "protocol.json", "manifest.csv"):
+            _copy_preserved(directory / name, paths.campaign_dir(target, arm) / "submission" / name)
+    loss_trace.validate_matching(
+        pd.concat(
+            [trace for _, traces in collected.values() for trace in traces], ignore_index=True
+        )
+    )
+    for arm, (records, traces) in collected.items():
+        _save_trajectories(target, arm, records, traces)
+    return [paths.campaign_dir(target, arm) for arm in arms.values()]
+
+
+def _collect_trajectory_campaign(target: str, arm: str, protocol: dict) -> Collected:
+    manifest = read_manifest(paths.campaign_manifest(target, arm), key="seed")
+    records, traces = [], []
+    pending = failed = 0
+    for row, payload, error in completed_jobs(manifest):
+        if error:
+            pending += error == "pending"
+            failed += error != "pending"
+            typer.echo(f"seed {row.seed}: {error}")
+            continue
+        with tempfile.TemporaryDirectory() as temporary:
+            folder = Path(temporary).resolve()
+            with zipfile.ZipFile(io.BytesIO(payload)) as archive:
+                if any(
+                    not (folder / n).resolve().is_relative_to(folder) for n in archive.namelist()
+                ):
+                    raise ValueError("Unsafe path in trajectory archive")
+                archive.extractall(folder)
+            record, trace = _write_trajectory_result(folder, target, arm, int(row.seed), protocol)
+        records.append(record)
+        traces.append(trace)
+    if not records:
+        raise RuntimeError(f"No finished calls yet for {target} / {arm} ({pending} pending).")
+    _save_trajectories(target, arm, records, traces)
+    return Collected(target, arm, len(records), pending, failed, sum(map(len, traces)), None)
+
+
 def collect_campaign(target: str, arm: str) -> Collected:
     """Gather finished Modal calls into the tables, structures and loss log.
 
@@ -344,6 +558,11 @@ def collect_campaign(target: str, arm: str) -> Collected:
     rather than allowed to abort the whole collection, because one bad design
     out of hundreds should not cost the rest.
     """
+    protocol_path = paths.campaign_protocol(target, arm)
+    if protocol_path.is_file():
+        protocol = initialization.read(protocol_path)
+        if protocol.get("output_kind") == "trajectory":
+            return _collect_trajectory_campaign(target, arm, protocol)
     manifest_path = paths.campaign_manifest(target, arm)
     if not manifest_path.is_file():
         raise FileNotFoundError(
@@ -427,7 +646,7 @@ def collect(
         raise typer.BadParameter("Supply --target and --arm, or --experiment")
     if temperature != 1 or root != paths.INITIALIZATION:
         raise typer.BadParameter("--temperature and --root require --experiment")
-    if artifacts.status(target, arm).has_results and not force:
+    if artifacts.status(target, arm).is_analysable and not force:
         typer.echo(
             f"Results already present: {paths.campaign_results(target, arm)}\n"
             f"Pass --force to recollect."
@@ -438,9 +657,10 @@ def collect(
         f"Collected {done.n_designs} designs ({done.n_pending} pending) for "
         f"{target} / {arm}\n"
         f"  {paths.campaign_results(target, arm)}\n"
-        f"  {paths.campaign_trace(target, arm)} ({done.n_trace_rows} step rows)\n"
-        f"  {done.n_viable} screen passes of {done.n_designs}"
+        f"  {paths.campaign_trace(target, arm)} ({done.n_trace_rows} step rows)"
     )
+    if done.n_viable is not None:
+        typer.echo(f"  {done.n_viable} screen passes of {done.n_designs}")
 
 
 def _resolve(call: Any) -> str:
@@ -589,12 +809,15 @@ def spawn_initialization(root: Path, experiment: str, temperature: float) -> pd.
             timeout=7200, max_containers=10 if experiment == "full" else 5
         )(load_critics=experiment == "full")
     path = initialization.experiment_dir(root, experiment, temperature) / "manifest.csv"
-    return submit_jobs(
+    manifest = submit_jobs(
         path,
         jobs,
         key="run",
         submit=lambda job: getattr(worker, job["method"]).spawn(**job["kwargs"]),
     )
+    if experiment == "short":
+        _register_short_campaigns(initialization.read(path.parent / "protocol.json"), manifest)
+    return manifest
 
 
 def collect_initialization(
@@ -605,6 +828,14 @@ def collect_initialization(
     manifest = read_manifest(directory / "manifest.csv", key="run")
     if manifest.empty:
         raise FileNotFoundError(f"No submitted jobs in {directory}")
+    if experiment == "short":
+        protocol = initialization.read(directory / "protocol.json")
+        for arm in _register_short_campaigns(protocol, manifest).values():
+            if artifacts.status(protocol["target"], arm).is_analysable and not force:
+                continue
+            done = collect_campaign(protocol["target"], arm)
+            typer.echo(f"Collected {done.n_designs} trajectories for {done.target} / {done.arm}")
+        return
     remaining = []
     for row in manifest.to_dict("records"):
         destination = directory / row["run"]

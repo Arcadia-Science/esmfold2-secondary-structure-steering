@@ -50,6 +50,7 @@ def test_design_archive_uses_publication_grid_and_preserves_structures(tmp_path,
         "summary.json",
     ):
         (folder / name).write_text("input or obsolete measurement")
+    (folder / "protocol.json").write_text("{}")
     ignored = tmp_path / "test__exploratory"
     ignored.mkdir()
     (ignored / "all_results.parquet").write_text("not published")
@@ -138,7 +139,6 @@ def test_initialization_archive_keeps_inputs_and_audits_without_report_copies(
     preserved = []
     for experiment, run in (
         ("softness", "input00"),
-        ("short", "runs/pair00"),
         ("full-T1", "seed00"),
     ):
         folder = tmp_path / experiment

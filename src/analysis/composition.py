@@ -5,12 +5,13 @@ screening summaries are derived in memory. No measurement cache is read or writt
 """
 
 from __future__ import annotations
+import json
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 
-from analysis import paths, secondary_structure
+from analysis import loss_trace, paths, secondary_structure
 
 SCORE_COLUMNS = {
     "critic_iptm": "iptm (0-1)",
@@ -108,6 +109,37 @@ def measure_campaign(target_key: str, arm: str) -> pd.DataFrame:
 def load(target_key: str, arm: str) -> pd.DataFrame:
     """Compatibility entry point for measuring a preserved campaign."""
     return measure_campaign(target_key, arm)
+
+
+def measure_steps(target_key: str, arm: str) -> pd.DataFrame:
+    """Join saved step coordinates to the normal campaign trace, measured afresh.
+
+    Geometry flags are returned alongside unmasked fractions. The caller makes
+    the scientific choice to exclude those fractions while retaining optimizer
+    diagnostics, which were measured independently of the coordinate readout.
+    No final confidence scores are required or manufactured for early states.
+    """
+    trace = loss_trace.load_campaign(target_key, arm)
+    protocol = json.loads(paths.campaign_protocol(target_key, arm).read_text())
+    loss_trace.validate_steps(trace, n_seeds=protocol["n_seeds"], steps=protocol["sgd_steps"])
+    rows = []
+    for record in trace.to_dict("records"):
+        seed, step = int(record["seed"]), int(record["step (index)"])
+        path = paths.campaign_step_complexes(target_key, arm, seed) / f"step{step:03d}.pdb"
+        backbone = secondary_structure.checked_backbone(path, record["binder sequence"])
+        comp = secondary_structure.composition(backbone)
+        if comp.n_residues != record["binder length (residues)"]:
+            raise ValueError(f"Backbone length differs from the trace: {path}")
+        rows.append(
+            {
+                **record,
+                "helix (fraction 0-1)": comp.helix_fraction,
+                "sheet (fraction 0-1)": comp.sheet_fraction,
+                "coil (fraction 0-1)": comp.coil_fraction,
+                "geometry pass (bool)": secondary_structure.geometry_pass(backbone),
+            }
+        )
+    return pd.DataFrame(rows)
 
 
 def summarize_by_length(values: pd.Series, lengths: pd.Series, edges: np.ndarray) -> pd.DataFrame:

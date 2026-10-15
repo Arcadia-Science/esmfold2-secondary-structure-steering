@@ -10,6 +10,8 @@ metadata without a Modal account.
 """
 
 from __future__ import annotations
+import math
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -151,17 +153,13 @@ every arm runs against every target.
 
 @dataclass(frozen=True)
 class ArmSpec:
-    """One loss configuration, applied identically across targets.
-
-    An arm is a weight schedule over the steering terms in
-    :mod:`analysis.steering`, and nothing else: the same design loop, the same
-    step count, the same seeds, the same targets. That is what makes the
-    comparison between arms a comparison of objectives.
-    """
+    """One design condition; its protocol records the run length and inputs."""
 
     key: str
     label: str
     schedule: LossSchedule
+    initialization_prior: str | None = None
+    initialization_temperature: float = 1.0
 
 
 ARM_SPECS: dict[str, ArmSpec] = {
@@ -368,6 +366,30 @@ INITIALIZATION_SPECS = {
     },
 }
 
+
+def short_trajectory_arms(temperature: float = 1.0) -> dict[str, str]:
+    """Register the matched prior conditions, keeping the uniform control distinct."""
+    if not math.isfinite(temperature) or temperature <= 0:
+        raise ValueError("Initialization temperature must be positive and finite")
+    value = float(temperature)
+    label = str(int(value)) if value.is_integer() else str(value)
+    arms = {
+        prior: f"init_{prior}_t{label}_short" for prior in INITIALIZATION_SPECS["short"]["arms"]
+    }
+    for prior, key in arms.items():
+        ARM_SPECS[key] = ArmSpec(
+            key=key,
+            label="Uniform" if prior == "uniform" else f"{prior.title()} prior",
+            schedule=schedule.VANILLA,
+            initialization_prior=prior,
+            initialization_temperature=value,
+        )
+    return arms
+
+
+SHORT_TRAJECTORY_ARMS = short_trajectory_arms()
+
+
 ONSET_SCAN: dict[int, str] = {
     0: "helix_mean_w20",
     1: "helix_mean_w20_from1",
@@ -420,6 +442,10 @@ def target(key: str) -> TargetSpec:
 
 def arm(key: str) -> ArmSpec:
     """Look up one loss arm, with a message naming the valid keys on failure."""
+    if key not in ARM_SPECS and (
+        match := re.fullmatch(r"init_(uniform|helix|sheet)_t(.+)_short", key)
+    ):
+        short_trajectory_arms(float(match[2]))
     if key not in ARM_SPECS:
         raise KeyError(f"unknown arm {key!r}; registered: {sorted(ARM_SPECS)}")
     return ARM_SPECS[key]

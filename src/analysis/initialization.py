@@ -10,7 +10,6 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-from biotite.sequence import ProteinSequence
 
 from analysis import composition, deposit, figures, loss_trace, paths
 from analysis import secondary_structure as ss
@@ -30,6 +29,7 @@ from analysis.targets import (
     N_SEEDS,
     PRIMARY_CRITIC,
     SGD_STEPS,
+    SHORT_TRAJECTORY_ARMS,
     target,
 )
 
@@ -62,7 +62,13 @@ def load(root: Path | None = None) -> dict[str, pd.DataFrame]:
     softness, forwards = measure_softness(root / "softness")
     tables = {
         "designs": designs,
-        "short-trajectories": measure_short_trajectories(root / "short"),
+        "short-trajectories": pd.concat(
+            [
+                composition.measure_steps(INITIALIZATION_TARGET, arm)
+                for arm in SHORT_TRAJECTORY_ARMS.values()
+            ],
+            ignore_index=True,
+        ),
         "softness-inputs": softness,
         "softness-forwards": forwards,
         "hardening": hardening,
@@ -84,17 +90,13 @@ def validate(tables: dict[str, pd.DataFrame]) -> None:
     lengths = designs.pivot(index="seed", columns="arm", values="length")
     assert lengths.nunique(axis=1).eq(1).all()
     short = tables["short-trajectories"]
-    assert set(short.arm) == set(INITIALIZATION_SPECS["short"]["arms"])
-    assert short.geometry_pass.all()
-    assert not short.duplicated(["arm", "pair", "step"]).any()
+    loss_trace.validate_matching(short)
     for _, frame in short.groupby("arm"):
-        assert (
-            set(frame.pair) == set(range(INITIALIZATION_SPECS["short"]["pairs"]))
-            and len(frame)
-            == INITIALIZATION_SPECS["short"]["pairs"] * INITIALIZATION_SPECS["short"]["updates"]
+        loss_trace.validate_steps(
+            frame,
+            n_seeds=INITIALIZATION_SPECS["short"]["pairs"],
+            steps=INITIALIZATION_SPECS["short"]["updates"],
         )
-    for _, frame in short.groupby(["arm", "pair"]):
-        assert set(frame.step) == set(range(INITIALIZATION_SPECS["short"]["updates"]))
     softness = tables["softness-inputs"]
     assert len(softness) == (
         INITIALIZATION_SPECS["softness"]["inputs"]
@@ -142,8 +144,15 @@ def report() -> dict:
     hardening = data["hardening"]
     return {
         "full_optimization": summary(data["designs"]).to_dict(orient="index"),
-        "short_step39_means": short[short.step == 39]
-        .groupby("arm")[["helix", "sheet", "helix_proxy", "entropy"]]
+        "short_step39_means": short[short["step (index)"] == 39]
+        .groupby("arm")[
+            [
+                "helix (fraction 0-1)",
+                "sheet (fraction 0-1)",
+                "helix_mean (0-1)",
+                "sequence entropy (bits)",
+            ]
+        ]
         .mean()
         .to_dict(orient="index"),
         "softness_means_at_dropout05": data["softness-inputs"]
@@ -155,39 +164,6 @@ def report() -> dict:
         .median()
         .to_dict(),
     }
-
-
-def short_trajectories(frame: pd.DataFrame, means: pd.DataFrame | None = None) -> plt.Figure:
-    """Individual trajectories and means for matched inputs across all three priors."""
-    if means is None:
-        means = frame.groupby(["arm", "step"])[["helix", "sheet", "helix_proxy", "entropy"]].mean()
-    with plt.rc_context({"font.size": 10, "axes.labelsize": 10, "axes.titlesize": 11}):
-        fig, axes = plt.subplots(2, 2, figsize=(10, 6.5), layout="constrained")
-        specs = [
-            ("helix", "DSSP helix fraction"),
-            ("sheet", "DSSP sheet fraction"),
-            ("helix_proxy", "Distogram helicity proxy"),
-            ("entropy", "Sequence entropy (bits/residue)"),
-        ]
-        for ax, (metric, title) in zip(axes.flat, specs, strict=True):
-            for arm, label, color, style in [
-                ("uniform", "Uniform", figures.BASELINE_COLOR, ":"),
-                ("helix", "Helix prior", figures.HELIX_COLOR, "-"),
-                ("sheet", "Sheet prior", figures.LOOP_COLOR, "--"),
-            ]:
-                group = frame[frame.arm == arm]
-                for _, trajectory in group.groupby("pair"):
-                    ax.plot(trajectory.step, trajectory[metric], color=color, alpha=0.2, lw=0.8)
-                mean = means.loc[arm, metric]
-                ax.plot(mean.index, mean, label=label, color=color, ls=style, lw=2.3)
-            ax.set(xlabel="Optimization step (before update)", ylabel=title, xlim=(0, 39))
-            if metric == "entropy":
-                ax.set_ylim(min(3.2, frame.entropy.min() - 0.05), np.log2(len(AA)) + 0.05)
-            else:
-                ax.set_ylim(-0.02, 1.02)
-            ax.spines[["top", "right"]].set_visible(False)
-        axes[0, 0].legend(frameon=False, fontsize=9)
-        return fig
 
 
 def full_outcomes(frame: pd.DataFrame) -> plt.Figure:
@@ -248,25 +224,14 @@ def read(path: Path):
 
 def measure(file: Path, sequence: str, chain: str = "B") -> dict:
     """Recompute binder DSSP and backbone geometry from the saved coordinates."""
-    backbone = ss.backbone_residues(ss._chain(file, chain, None))
-    observed = "".join(ProteinSequence.convert_letter_3to1(n) for n in backbone.res_names)
-    if observed != sequence or not np.isfinite(backbone.coords).all():
-        raise ValueError(f"Invalid coordinates or sequence mismatch: {file}")
-    if not (np.diff(backbone.res_ids) == 1).all():
-        raise ValueError(f"Noncontiguous backbone: {file}")
+    backbone = ss.checked_backbone(file, sequence, chain)
     labels = ss.assign(backbone)
-    adjacent = np.linalg.norm(np.diff(backbone.coords[:, 1], axis=0), axis=-1)
-    nca = np.linalg.norm(backbone.coords[:, 0] - backbone.coords[:, 1], axis=-1)
     return {
         "length": len(backbone),
         "helix": float((labels == "H").mean()),
         "sheet": float((labels == "E").mean()),
         "coil": float((labels == "-").mean()),
-        "geometry_pass": bool(
-            3 < np.median(adjacent) < 5
-            and 1 < np.median(nca) < 2
-            and ((adjacent > 3) & (adjacent < 5)).mean() > 0.9
-        ),
+        "geometry_pass": ss.geometry_pass(backbone),
     }
 
 
@@ -320,37 +285,6 @@ def trace(path: Path, steps: int) -> pd.DataFrame:
     if frame["step (index)"].tolist() != list(range(steps)):
         raise ValueError(f"Missing or duplicate optimization steps: {path}")
     return frame
-
-
-def measure_short_trajectories(root: Path) -> pd.DataFrame:
-    settings = protocol(root, "short")
-    rows = []
-    for pair in range(settings["pairs"]):
-        paired = []
-        for arm in settings["arms"]:
-            folder = root / f"runs/pair{pair:02d}" / arm
-            steps = trace(folder / "step_trace.csv", settings["updates"])
-            paired.append(steps)
-            if not steps["steering_loss (dimensionless)"].eq(0).all():
-                raise ValueError(f"Unexpected loss steering: {folder}")
-            for record in steps.to_dict("records"):
-                step = record["step (index)"]
-                rows.append(
-                    {
-                        "pair": pair,
-                        "arm": arm,
-                        "step": step,
-                        **measure(folder / f"step{step:03d}.pdb", record["binder sequence"]),
-                        "helix_proxy": record["helix_mean (0-1)"],
-                        "entropy": record["sequence entropy (bits)"],
-                    }
-                )
-        if len({steps.loc[0, "binder sequence"] for steps in paired}) != 1:
-            raise ValueError(f"Unmatched initial sequences for pair {pair}")
-        for column in ("inversion model", "temperature (0-1)"):
-            if any(not paired[0][column].equals(steps[column]) for steps in paired[1:]):
-                raise ValueError(f"Unmatched {column} for pair {pair}")
-    return pd.DataFrame(rows)
 
 
 def hardening_summary(traces: pd.DataFrame) -> pd.DataFrame:
