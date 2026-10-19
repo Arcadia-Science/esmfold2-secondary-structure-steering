@@ -510,6 +510,7 @@ def design_prior(driver, audit, sources, bundle: dict, protocol: dict, archive) 
         target_name=protocol["target"],
         target_sequence=target,
         binder_name="sheet_prior",
+        arm=protocol["arm"],
         binder_sequence="#" * length,
         is_antibody=False,
         seed=seed,
