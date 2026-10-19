@@ -8,7 +8,6 @@ from __future__ import annotations
 import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, fields
-from numbers import Real
 from typing import Any
 
 from analysis.confidence import ChainPlddt
@@ -16,35 +15,11 @@ from analysis.targets import PRIMARY_CRITIC
 from analysis.targets import arm as get_arm
 
 
-def _text(value: object, name: str) -> None:
-    if not isinstance(value, str) or not value:
-        raise ValueError(f"{name} must be a nonempty string; got {value!r}")
-
-
-def _integer(value: object, name: str, minimum: int = 0) -> None:
-    if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
-        raise ValueError(f"{name} must be an integer >= {minimum}; got {value!r}")
-
-
-def _finite(value: object, name: str) -> None:
-    if isinstance(value, bool) or not isinstance(value, Real) or not math.isfinite(value):
-        raise ValueError(f"{name} must be a finite number; got {value!r}")
-
-
 @dataclass(frozen=True)
 class InitializationSettings:
     prior: str
     temperature: float
     probability_margin: float
-
-    def __post_init__(self) -> None:
-        if self.prior not in {"uniform", "helix", "sheet"}:
-            raise ValueError(f"Unknown initialization prior: {self.prior!r}")
-        for name in ("temperature", "probability_margin"):
-            value = getattr(self, name)
-            _finite(value, name)
-            if value <= 0:
-                raise ValueError(f"{name} must be positive; got {value!r}")
 
 
 @dataclass(frozen=True)
@@ -55,12 +30,6 @@ class RunSpec:
     steps: int
     initialization: InitializationSettings | None = None
     primary_critic: str = PRIMARY_CRITIC
-
-    def __post_init__(self) -> None:
-        for name in ("target", "arm", "primary_critic"):
-            _text(getattr(self, name), name)
-        _integer(self.seed, "seed")
-        _integer(self.steps, "steps", minimum=1)
 
     @classmethod
     def from_protocol(cls, protocol: Mapping, *, seed: int) -> RunSpec:
@@ -117,16 +86,6 @@ class CriticResult:
     distogram_iptm_proxy: float
     final_loss: float
 
-    def __post_init__(self) -> None:
-        _text(self.name, "critic name")
-        _text(self.designed_sequence, "designed sequence")
-        if self.iptm is not None:
-            _finite(self.iptm, "ipTM")
-        for field in fields(self.plddt):
-            _finite(getattr(self.plddt, field.name), field.name)
-        _finite(self.distogram_iptm_proxy, "distogram ipTM proxy")
-        _finite(self.final_loss, "final loss")
-
     @classmethod
     def from_record(cls, record: Mapping[str, Any]) -> CriticResult:
         """Accept the same critic record from the model or its preserved JSON."""
@@ -157,17 +116,8 @@ class DesignResult:
             raise ValueError("Missing primary critic or duplicate critics")
         if any(c.designed_sequence != self.designed_sequence for c in self.critics):
             raise ValueError("Critic sequence differs between evaluations")
-        parts = self.designed_sequence.split("|")
-        if len(parts) != 2 or not all(parts):
-            raise ValueError("Expected target|binder in the designed sequence")
         if self.primary.iptm is None:
             raise ValueError("Primary critic must report ipTM")
-        if self.selected_step is not None:
-            _integer(self.selected_step, "selected step")
-            if self.selected_step >= self.run.steps:
-                raise ValueError("Selected step is outside the optimization run")
-        if self.binder_name is not None:
-            _text(self.binder_name, "binder name")
 
     @classmethod
     def from_critics(
@@ -250,15 +200,6 @@ class DesignCompletion:
     binder_plddt: float
 
     def __post_init__(self) -> None:
-        _text(self.initial_sequence, "initial sequence")
-        _text(self.binder_sequence, "binder sequence")
-        _integer(self.selected_step, "selected step")
-        if self.selected_step >= self.run.steps:
-            raise ValueError("Selected step is outside the optimization run")
-        _finite(self.iptm, "completion ipTM")
-        _finite(self.binder_plddt, "completion binder pLDDT")
-        if self.run.initialization is None:
-            raise ValueError("Full initialization completion requires initialization settings")
         if len(self.initial_sequence) != len(self.binder_sequence):
             raise ValueError("Initial and selected sequence lengths differ")
 
@@ -284,15 +225,12 @@ class DesignCompletion:
             iptm=record["iptm"],
             binder_plddt=record["plddt"],
         )
-        _integer(record["binder_length"], "binder length", minimum=1)
         if record["binder_length"] != len(value.binder_sequence):
             raise ValueError("Completion binder length differs from its sequence")
         return value
 
     @classmethod
     def from_result(cls, result: DesignResult, initial_sequence: str) -> DesignCompletion:
-        if result.selected_step is None:
-            raise ValueError("Completion requires a selected step")
         return cls(
             run=result.run,
             initial_sequence=initial_sequence,

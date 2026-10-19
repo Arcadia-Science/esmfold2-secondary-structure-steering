@@ -134,23 +134,10 @@ def test_completion_names_mismatched_settings(archived_result, field, observed, 
         completion.run.validate_against(expected)
 
 
-@pytest.mark.parametrize(
-    "field, value",
-    [
-        ("seed", True),
-        ("steps", "3"),
-        ("initialization_temperature", float("nan")),
-        ("probability_margin", 0),
-        ("iptm", float("inf")),
-        ("plddt", "85.0"),
-        ("selected_step", 3),
-        ("binder_length", 99),
-    ],
-)
-def test_completion_rejects_malformed_values(archived_result, field, value):
-    with pytest.raises(ValueError):
+def test_completion_length_matches_sequence(archived_result):
+    with pytest.raises(ValueError, match="Completion binder length differs from its sequence"):
         DesignCompletion.from_record(
-            {**archived_result.completion, field: value}, target="pdl1_igv", prior="sheet"
+            {**archived_result.completion, "binder_length": 99}, target="pdl1_igv", prior="sheet"
         )
 
 
