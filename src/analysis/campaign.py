@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated, Any
 
+import numpy as np
 import pandas as pd
 import typer
 
@@ -25,9 +26,13 @@ from analysis import artifacts, composition, deposit, initialization, loss_trace
 from analysis.targets import (
     ARM_SPECS,
     CAMPAIGN_ARMS,
+    CRITIC_MODELS,
+    INITIALIZATION_TARGET,
     N_SEEDS,
+    PRIMARY_CRITIC,
     SGD_STEPS,
     TARGET_SPECS,
+    full_initialization_arm,
     short_trajectory_arms,
 )
 from analysis.targets import (
@@ -187,7 +192,7 @@ def spawn_campaign(
     arm_spec = get_arm(arm)
     if arm_spec.initialization_prior is not None:
         raise ValueError(
-            "Matched prior arms must be prepared and submitted together with --experiment short"
+            "Prior arms require prepared inputs; use --experiment short or --experiment full"
         )
     manifest_path = paths.campaign_manifest(target, arm)
 
@@ -380,6 +385,186 @@ def _copy_preserved(source: Path, destination: Path) -> None:
     shutil.copy2(source, destination)
 
 
+def _register_full_campaign(directory: Path) -> str:
+    """Record a prepared full initialization as an ordinary campaign."""
+    original = initialization.read(directory / "protocol.json")
+    arm = full_initialization_arm(original["initialization_temperature"])
+    if original["arm"] != arm:
+        raise ValueError("Prepared initialization arm does not match its temperature")
+    target = original["target"]
+    settings = {
+        "target": target,
+        "arm": arm,
+        "arm_label": get_arm(arm).label,
+        "experiment": "full",
+        "initialization_prior": "sheet",
+        "initialization_temperature": original["initialization_temperature"],
+        "n_seeds": original["n_seeds"],
+        "sgd_steps": original["steps"],
+        "schedule": get_arm(arm).schedule.to_dict(),
+        "source_protocol": original,
+    }
+    path = paths.campaign_protocol(target, arm)
+    if path.is_file() and initialization.read(path) != settings:
+        raise ValueError(f"Campaign settings differ from the saved protocol: {path}")
+    initialization.save(path, settings)
+    submission = path.parent / "submission"
+    for file in [directory / "protocol.json", directory / "inputs.json"]:
+        _copy_preserved(file, submission / file.name)
+    for file in (directory / "inputs").glob("*.pt"):
+        _copy_preserved(file, submission / "inputs" / file.name)
+    return arm
+
+
+def _full_design_result(source: Path, target: str, arm: str, seed: int, protocol: dict) -> dict:
+    """Validate a full worker archive and expose the ordinary design payload."""
+    original = protocol["source_protocol"]
+    required = [
+        source / name
+        for name in (
+            "protocol.json",
+            "audit.json",
+            "initialization.pt",
+            "sequence-states.pt",
+            "complete.json",
+            "critics.json",
+            "step_trace.csv",
+            "step_trace.jsonl",
+            *(f"{name}.pdb" for name in CRITIC_MODELS),
+        )
+    ]
+    if missing := [file for file in required if not file.is_file()]:
+        raise FileNotFoundError(f"Incomplete full design: {missing[:5]}")
+    run_protocol = initialization.read(source / "protocol.json")
+    if any(run_protocol.get(key) != value for key, value in original.items()):
+        raise ValueError(f"Run protocol differs from submitted protocol: {source}")
+    record = initialization.read(source / "complete.json")
+    for key, expected in {
+        "seed": seed,
+        "arm": arm,
+        "steps": protocol["sgd_steps"],
+        "initialization_temperature": protocol["initialization_temperature"],
+        "probability_margin": original["probability_margin"],
+        "primary_critic": PRIMARY_CRITIC,
+    }.items():
+        if record[key] != expected:
+            raise ValueError(f"Unexpected {key}: {source}")
+    trace = initialization.trace(source / "step_trace.csv", protocol["sgd_steps"])
+    if not trace.arm.eq(arm).all():
+        raise ValueError(f"Unexpected full-design trace arm: {source}")
+    if (
+        not trace.target.eq(target).all()
+        or not trace.seed.eq(seed).all()
+        or not trace["steering_loss (dimensionless)"].eq(0).all()
+        or not trace["base_structure_weight (dimensionless)"].eq(1).all()
+    ):
+        raise ValueError(f"Unexpected objective or run identity: {source}")
+    live_trace = loss_trace.load(source / "step_trace.jsonl")
+    pd.testing.assert_frame_equal(trace, live_trace, check_dtype=False, check_like=True)
+
+    baseline_path = paths.campaign_trace(target, "vanilla")
+    if initialization.digest(baseline_path) != original["baseline_trace_sha256"]:
+        raise ValueError("Baseline trace changed since initialization preparation")
+    baseline = loss_trace.load_campaign(target, "vanilla")
+    matched = baseline[baseline.seed == seed].sort_values("step (index)").reset_index(drop=True)
+    if (
+        len(matched) != len(trace)
+        or trace.loc[0, "binder sequence"] != matched.loc[0, "binder sequence"]
+        or record["initial_sequence"] != trace.loc[0, "binder sequence"]
+        or not trace["binder length (residues)"].eq(record["binder_length"]).all()
+        or record["binder_length"] != len(record["initial_sequence"])
+        or not trace["inversion model"].eq(matched["inversion model"]).all()
+        or not np.allclose(trace["temperature (0-1)"], matched["temperature (0-1)"])
+    ):
+        raise ValueError(f"Unmatched initial sequence or optimization schedule: {source}")
+    selected = trace.loc[trace["iptm (0-1)"].idxmax()]
+    sequence = selected["binder sequence"]
+    if record["selected_step"] != selected["step (index)"] or record["binder_sequence"] != sequence:
+        raise ValueError(f"Completion record differs from selected sequence: {source}")
+    scores = initialization.read(source / "critics.json")
+    by_critic = {score["critic_name"]: score for score in scores}
+    if len(scores) != len(CRITIC_MODELS) or set(by_critic) != set(CRITIC_MODELS):
+        raise ValueError(f"Missing or duplicate critics: {source}")
+    for name, score in by_critic.items():
+        if score["designed_sequence"] != original["target_sequence"] + "|" + sequence:
+            raise ValueError(f"Critic sequence differs from selected sequence: {source}")
+        if not np.isfinite([score["iptm"], score["plddt_binder"]]).all():
+            raise ValueError(f"Nonfinite critic scores: {source}")
+        composition.secondary_structure.checked_backbone(source / f"{name}.pdb", sequence)
+    primary = by_critic[PRIMARY_CRITIC]
+    if not np.allclose(
+        [record["iptm"], record["plddt"]], [primary["iptm"], primary["plddt_binder"]]
+    ):
+        raise ValueError(f"Completion record differs from primary critic: {source}")
+
+    destination = paths.campaign_run(target, arm, seed)
+    for file in source.rglob("*"):
+        if file.is_file():
+            _copy_preserved(file, destination / file.relative_to(source))
+    return {
+        "seed": seed,
+        "target": target,
+        "arm": arm,
+        "arm_label": get_arm(arm).label,
+        "steps": protocol["sgd_steps"],
+        "initialization_temperature": protocol["initialization_temperature"],
+        "initialization_prior": "sheet",
+        "probability_margin": original["probability_margin"],
+        "target_length_residues": len(original["target_sequence"]),
+        "designed_sequence": primary["designed_sequence"],
+        "binder_sequence": sequence,
+        "binder_length_residues": len(sequence),
+        "final_loss": primary["final_loss"],
+        "critic_name": PRIMARY_CRITIC,
+        "critic_iptm": primary["iptm"],
+        "critic_plddt_binder": primary["plddt_binder"],
+        "critic_plddt_target": primary["plddt_target"],
+        "critic_plddt_complex": primary["plddt_complex"],
+        "critic_distogram_iptm_proxy": primary["distogram_iptm_proxy"],
+        "critic_iptm_by_model": {name: s["iptm"] for name, s in by_critic.items()},
+        "critic_plddt_binder_by_model": {name: s["plddt_binder"] for name, s in by_critic.items()},
+        "critic_distogram_iptm_proxy_by_model": {
+            name: s["distogram_iptm_proxy"] for name, s in by_critic.items()
+        },
+        "selected_step": int(selected["step (index)"]),
+        "design_steps_recorded": len(trace),
+        "step_trace": trace.to_dict("records"),
+        "complex_pdb": (source / f"{PRIMARY_CRITIC}.pdb").read_text(),
+    }
+
+
+def _full_campaign_jobs(manifest: pd.DataFrame, target: str, arm: str, protocol: dict) -> Iterator:
+    """Reuse preserved full runs; poll only calls not yet collected."""
+    remaining = []
+    for row in manifest.itertuples(index=False):
+        folder = paths.campaign_run(target, arm, int(row.seed))
+        marker = folder / "collected.json"
+        if marker.is_file():
+            if initialization.read(marker)["call_id"] != row.call_id:
+                raise ValueError(f"Collected call ID differs from campaign manifest: {folder}")
+            yield row, _full_design_result(folder, target, arm, int(row.seed), protocol), ""
+        else:
+            remaining.append(row._asdict())
+    for row, payload, error in completed_jobs(pd.DataFrame(remaining, columns=manifest.columns)):
+        if error:
+            yield row, None, error
+            continue
+        with tempfile.TemporaryDirectory() as temporary:
+            folder = Path(temporary).resolve()
+            with zipfile.ZipFile(io.BytesIO(payload)) as archive:
+                if any(
+                    not (folder / n).resolve().is_relative_to(folder) for n in archive.namelist()
+                ):
+                    raise ValueError("Unsafe path in full-design archive")
+                archive.extractall(folder)
+            result = _full_design_result(folder, target, arm, int(row.seed), protocol)
+        initialization.save(
+            paths.campaign_run(target, arm, int(row.seed)) / "collected.json",
+            {"call_id": row.call_id},
+        )
+        yield row, result, ""
+
+
 def _write_trajectory_result(
     source: Path, target: str, arm: str, seed: int, protocol: dict
 ) -> tuple[dict, pd.DataFrame]:
@@ -559,6 +744,7 @@ def collect_campaign(target: str, arm: str) -> Collected:
     out of hundreds should not cost the rest.
     """
     protocol_path = paths.campaign_protocol(target, arm)
+    protocol = {}
     if protocol_path.is_file():
         protocol = initialization.read(protocol_path)
         if protocol.get("output_kind") == "trajectory":
@@ -578,7 +764,12 @@ def collect_campaign(target: str, arm: str) -> Collected:
     trace_rows: list[dict[str, object]] = []
     failures: list[str] = []
     pending = 0
-    for row, result, error in completed_jobs(manifest):
+    jobs = (
+        _full_campaign_jobs(manifest, target, arm, protocol)
+        if protocol.get("experiment") == "full"
+        else completed_jobs(manifest)
+    )
+    for row, result, error in jobs:
         if error == "pending":
             pending += 1
             continue
@@ -646,7 +837,11 @@ def collect(
         raise typer.BadParameter("Supply --target and --arm, or --experiment")
     if temperature != 1 or root != paths.INITIALIZATION:
         raise typer.BadParameter("--temperature and --root require --experiment")
-    if artifacts.status(target, arm).is_analysable and not force:
+    protocol_path = paths.campaign_protocol(target, arm)
+    full = (
+        protocol_path.is_file() and initialization.read(protocol_path).get("experiment") == "full"
+    )
+    if artifacts.status(target, arm).is_analysable and not force and not full:
         typer.echo(
             f"Results already present: {paths.campaign_results(target, arm)}\n"
             f"Pass --force to recollect."
@@ -808,11 +1003,16 @@ def spawn_initialization(root: Path, experiment: str, temperature: float) -> pd.
         worker = modal.Cls.from_name(APP_NAME, REMOTE_CLASS).with_options(
             timeout=7200, max_containers=10 if experiment == "full" else 5
         )(load_critics=experiment == "full")
-    path = initialization.experiment_dir(root, experiment, temperature) / "manifest.csv"
+    directory = initialization.experiment_dir(root, experiment, temperature)
+    if experiment == "full":
+        arm = _register_full_campaign(directory)
+        path = paths.campaign_manifest(protocol["target"], arm)
+    else:
+        path = directory / "manifest.csv"
     manifest = submit_jobs(
         path,
         jobs,
-        key="run",
+        key="seed" if experiment == "full" else "run",
         submit=lambda job: getattr(worker, job["method"]).spawn(**job["kwargs"]),
     )
     if experiment == "short":
@@ -824,6 +1024,11 @@ def collect_initialization(
     root: Path, experiment: str, temperature: float, *, force: bool = False
 ) -> None:
     initialization.validate_experiment(experiment, temperature)
+    if experiment == "full":
+        arm = full_initialization_arm(temperature)
+        done = collect_campaign(INITIALIZATION_TARGET, arm)
+        typer.echo(f"Collected {done.n_designs} designs for {done.target} / {done.arm}")
+        return
     directory = initialization.experiment_dir(root, experiment, temperature)
     manifest = read_manifest(directory / "manifest.csv", key="run")
     if manifest.empty:

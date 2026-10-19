@@ -23,6 +23,7 @@ from analysis.priors import (
 )
 from analysis.targets import (
     CRITIC_MODELS,
+    FULL_INITIALIZATION_ARMS,
     INITIALIZATION_BASELINES,
     INITIALIZATION_SPECS,
     INITIALIZATION_TARGET,
@@ -30,6 +31,7 @@ from analysis.targets import (
     PRIMARY_CRITIC,
     SGD_STEPS,
     SHORT_TRAJECTORY_ARMS,
+    full_initialization_arm,
     target,
 )
 
@@ -38,9 +40,7 @@ LABELS = {
     "vanilla": "Unsteered",
     "helix_mean_w10": "Loss weight 1.0",
     "helix_mean_w20": "Loss weight 2.0",
-    "sheet_prior": "Sheet prior T=1",
-    "sheet_prior_t2": "Sheet prior T=2",
-    "sheet_prior_t4": "Sheet prior T=4",
+    **{arm: f"Sheet prior T={t}" for t, arm in FULL_INITIALIZATION_ARMS.items()},
 }
 COLORS = [
     figures.BASELINE_COLOR,
@@ -56,9 +56,9 @@ def load(root: Path | None = None) -> dict[str, pd.DataFrame]:
     """Read model outputs and recompute measurements; never save derived tables."""
     if root is None:
         root = ROOT
-        if not (root / "full-T1" / "protocol.json").is_file():
+        if not (root / "softness" / "protocol.json").is_file():
             deposit.INITIALIZATION_INPUTS.fetch()
-    designs, hardening, critics = full_designs(root)
+    designs, hardening, critics = full_designs()
     softness, forwards = measure_softness(root / "softness")
     tables = {
         "designs": designs,
@@ -307,8 +307,8 @@ def hardening_summary(traces: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def full_designs(root: Path) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    """Measure prior designs and reuse the main campaigns directly for controls."""
+def full_designs() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """Summarize priors and controls through the same campaign readers."""
     designs, critics, traces = [], [], []
     columns = {
         "helix (fraction 0-1)": "helix",
@@ -318,7 +318,7 @@ def full_designs(root: Path) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
         "binder pLDDT (0-100)": "plddt",
         "binder length (residues)": "length",
     }
-    for arm in BASELINES:
+    for arm in (*BASELINES, *FULL_INITIALIZATION_ARMS.values()):
         designs.append(composition.load(INITIALIZATION_TARGET, arm).rename(columns=columns))
         traces.append(loss_trace.load_campaign(INITIALIZATION_TARGET, arm))
         for record in pd.read_parquet(paths.campaign_results(INITIALIZATION_TARGET, arm)).to_dict(
@@ -334,51 +334,10 @@ def full_designs(root: Path) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
                         "plddt": record["critic_plddt_binder_by_model"][name],
                     }
                 )
-    records = []
-    baseline = traces[0].sort_values("step (index)")
-    for temperature in INITIALIZATION_SPECS["full"]["temperatures"]:
-        arm = "sheet_prior" if temperature == 1 else f"sheet_prior_t{temperature}"
-        settings = protocol(root / f"full-T{temperature}", "full")
-        if settings["initialization_temperature"] != temperature:
-            raise ValueError(f"Wrong initialization temperature: {temperature}")
-        for seed in range(settings["n_seeds"]):
-            folder = root / f"full-T{temperature}/seed{seed:02d}"
-            steps = trace(folder / "step_trace.csv", settings["steps"])
-            matched = baseline[baseline.seed == seed].reset_index(drop=True)
-            if steps.loc[0, "binder sequence"] != matched.loc[0, "binder sequence"]:
-                raise ValueError(f"Main campaign has different starting inputs: {folder}")
-            if not steps["steering_loss (dimensionless)"].eq(0).all():
-                raise ValueError(f"Unexpected loss steering: {folder}")
-            if not steps["base_structure_weight (dimensionless)"].eq(1).all():
-                raise ValueError(f"Unexpected structural loss schedule: {folder}")
-            if not (steps["inversion model"] == matched["inversion model"]).all():
-                raise ValueError(f"Unmatched model schedule: {folder}")
-            if not np.allclose(steps["temperature (0-1)"], matched["temperature (0-1)"]):
-                raise ValueError(f"Unmatched annealing schedule: {folder}")
-            best_sequence = steps.loc[steps["iptm (0-1)"].idxmax(), "binder sequence"]
-            traces.append(steps.assign(arm=arm, seed=seed))
-            scores = read(folder / "critics.json")
-            if len(scores) != len(CRITICS) or {r["critic_name"] for r in scores} != CRITICS:
-                raise ValueError(f"Missing or duplicate critics: {folder}")
-            for score in scores:
-                if score["designed_sequence"].split("|")[-1] != best_sequence:
-                    raise ValueError(f"Critic sequence differs from selected sequence: {folder}")
-                records.append(
-                    {
-                        "arm": arm,
-                        "seed": seed,
-                        "critic": score["critic_name"],
-                        "iptm": score["iptm"],
-                        "plddt": score["plddt_binder"],
-                        **measure(folder / f"{score['critic_name']}.pdb", best_sequence),
-                    }
-                )
-    measured = pd.DataFrame(records)
-    designs.append(measured[measured.critic == PRIMARY])
     return (
         pd.concat(designs, ignore_index=True),
         hardening_summary(pd.concat(traces, ignore_index=True)),
-        pd.concat([pd.DataFrame(critics), measured], ignore_index=True),
+        pd.DataFrame(critics),
     )
 
 
@@ -489,7 +448,9 @@ def prepare_inputs(root: Path, experiment: str, temperature: float) -> Path:
             item = {"seed": int(seed), "initial_sequence": sequence}
             if temperature != 1:
                 t1 = torch.load(
-                    root / "full-T1" / f"seed{seed:02d}/initialization.pt", weights_only=True
+                    paths.campaign_run(INITIALIZATION_TARGET, full_initialization_arm(1), seed)
+                    / "initialization.pt",
+                    weights_only=True,
                 )
                 if t1["bundle"]["initial_sequence"] != sequence:
                     raise ValueError(
@@ -505,11 +466,7 @@ def prepare_inputs(root: Path, experiment: str, temperature: float) -> Path:
         save(directory / "inputs.json", bundles)
         protocol.update(
             {
-                "arm": (
-                    "sheet_prior"
-                    if temperature == 1
-                    else f"sheet_prior_t{temperature_label(temperature)}"
-                ),
+                "arm": full_initialization_arm(temperature),
                 "aa_order": prior["amino_acid_order"],
                 "inputs_sha256": digest(directory / "inputs.json"),
                 "matching": (
@@ -619,7 +576,8 @@ def prepared_jobs(root: Path, experiment: str, temperature: float) -> tuple[dict
                     raise ValueError(f"Changed features: {source}")
                 bundle = {**item, "features_blob": source.read_bytes()}
             name, method = f"seed{item['seed']:02d}", "design_prior"
+        identity = {"seed": item["seed"]} if experiment == "full" else {"run": name}
         jobs.append(
-            {"run": name, "method": method, "kwargs": {"bundle": bundle, "protocol": protocol}}
+            {**identity, "method": method, "kwargs": {"bundle": bundle, "protocol": protocol}}
         )
     return protocol, jobs

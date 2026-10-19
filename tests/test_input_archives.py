@@ -137,10 +137,7 @@ def test_initialization_archive_keeps_inputs_and_audits_without_report_copies(
         },
     )
     preserved = []
-    for experiment, run in (
-        ("softness", "input00"),
-        ("full-T1", "seed00"),
-    ):
+    for experiment, run in (("softness", "input00"),):
         folder = tmp_path / experiment
         work = folder / run
         work.mkdir(parents=True)
@@ -160,6 +157,6 @@ def test_initialization_archive_keeps_inputs_and_audits_without_report_copies(
         pilot.mkdir()
         (pilot / "model.pdb").write_text("unreported pilot")
     assert set(deposit.initialization_members(tmp_path)) == set(preserved)
-    (tmp_path / "full-T1/seed00/audit.json").unlink()
+    (tmp_path / "softness/input00/audit.json").unlink()
     with pytest.raises(FileNotFoundError, match="provenance"):
         deposit.initialization_members(tmp_path)

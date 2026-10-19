@@ -229,8 +229,8 @@ def test_prepare_full_temperatures_in_checkout_without_exploratory(tmp_path, mon
     t1 = workflow.prepare_inputs(root, "full", 1)
     inputs = workflow.read(t1 / "inputs.json")
     for item in inputs:
-        folder = t1 / f"seed{item['seed']:02d}"
-        folder.mkdir()
+        folder = paths.campaign_run("pdl1_igv", targets.full_initialization_arm(1), item["seed"])
+        folder.mkdir(parents=True)
         torch.save(
             {"bundle": item, "features": {"test": torch.tensor([item["seed"]])}},
             folder / "initialization.pt",
@@ -273,7 +273,7 @@ def test_stale_source_prevents_launch_before_any_remote_call(tmp_path, monkeypat
     [("softness", 1), ("short", 1), ("short", 1.5), ("full", 1), ("full", 1.5)],
 )
 def test_shared_cli_prepares_submits_and_collects_initialization(
-    tmp_path, monkeypatch, prior, experiment, temperature, trajectory_archive
+    tmp_path, monkeypatch, prior, experiment, temperature, trajectory_archive, full_design_archive
 ):
     import json
     import zipfile
@@ -287,8 +287,21 @@ def test_shared_cli_prepares_submits_and_collects_initialization(
     monkeypatch.setattr(paths, "CAMPAIGNS", tmp_path / "campaigns")
     trace = paths.campaign_trace("pdl1_igv", "vanilla")
     trace.parent.mkdir(parents=True)
+    baseline_steps = 150 if experiment == "full" else 1
     pd.DataFrame(
-        {"seed": range(30), "step (index)": 0, "binder sequence": ["ADEFGHIKLMNPQRSTVWY"] * 30}
+        [
+            {
+                "target": "pdl1_igv",
+                "arm": "vanilla",
+                "seed": seed,
+                "step (index)": step,
+                "binder sequence": "ADEFGHIKLMNPQRSTVWY",
+                "inversion model": "model1",
+                "temperature (0-1)": 0.999,
+            }
+            for seed in range(30)
+            for step in range(baseline_steps)
+        ]
     ).to_parquet(trace)
     screen_inputs = {f"input{i:02d}.pt": f"tensor-{i}".encode() for i in range(10)}
     monkeypatch.setattr(
@@ -342,6 +355,14 @@ def test_shared_cli_prepares_submits_and_collects_initialization(
                     sequence=submitted[int(call_id.split("-")[-1]) - 1][1]["bundle"]["sequence"],
                 )
                 if experiment == "short"
+                else full_design_archive(
+                    submitted[int(call_id.split("-")[-1]) - 1][1]["protocol"],
+                    seed=submitted[int(call_id.split("-")[-1]) - 1][1]["bundle"]["seed"],
+                    sequence=submitted[int(call_id.split("-")[-1]) - 1][1]["bundle"][
+                        "initial_sequence"
+                    ],
+                )
+                if experiment == "full"
                 else payload.getvalue()
             )
         ),
@@ -350,8 +371,10 @@ def test_shared_cli_prepares_submits_and_collects_initialization(
     if experiment == "full" and temperature != 1:
         t1 = workflow.prepare_inputs(root, "full", 1)
         for item in workflow.read(t1 / "inputs.json"):
-            folder = t1 / f"seed{item['seed']:02d}"
-            folder.mkdir()
+            folder = paths.campaign_run(
+                "pdl1_igv", targets.full_initialization_arm(1), item["seed"]
+            )
+            folder.mkdir(parents=True)
             torch.save(
                 {"bundle": item, "features": {"test": torch.tensor([item["seed"]])}},
                 folder / "initialization.pt",
@@ -372,7 +395,12 @@ def test_shared_cli_prepares_submits_and_collects_initialization(
             for item in options
         )
     directory = workflow.experiment_dir(root, experiment, temperature)
-    frame = pd.read_csv(directory / "manifest.csv")
+    manifest = (
+        paths.campaign_manifest("pdl1_igv", targets.full_initialization_arm(temperature))
+        if experiment == "full"
+        else directory / "manifest.csv"
+    )
+    frame = pd.read_csv(manifest)
     assert len(frame) == expected
     assert not (directory / "calls.json").exists()
     if experiment == "short":
@@ -380,6 +408,13 @@ def test_shared_cli_prepares_submits_and_collects_initialization(
             result = pd.read_parquet(paths.campaign_results("pdl1_igv", arm))
             assert len(result) == expected and result.arm.eq(arm).all()
             assert not paths.campaign_complexes("pdl1_igv", arm).exists()
+    elif experiment == "full":
+        arm = targets.full_initialization_arm(temperature)
+        result = pd.read_parquet(paths.campaign_results("pdl1_igv", arm))
+        assert len(result) == expected and result.arm.eq(arm).all()
+        assert len(list(paths.campaign_complexes("pdl1_igv", arm).glob("seed*.pdb"))) == expected
+        assert not (directory / "seed00").exists()
+        assert not (directory / "manifest.csv").exists()
     else:
         for name in frame.run:
             assert (directory / name / "model.pdb").read_text() == "model output"

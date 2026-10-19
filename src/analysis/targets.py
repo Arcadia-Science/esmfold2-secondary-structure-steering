@@ -390,6 +390,29 @@ def short_trajectory_arms(temperature: float = 1.0) -> dict[str, str]:
 SHORT_TRAJECTORY_ARMS = short_trajectory_arms()
 
 
+def full_initialization_arm(temperature: float = 1.0) -> str:
+    """Register a full sheet-prior campaign at the requested temperature."""
+    if not math.isfinite(temperature) or temperature <= 0:
+        raise ValueError("Initialization temperature must be positive and finite")
+    value = float(temperature)
+    label = str(int(value)) if value.is_integer() else str(value)
+    key = f"init_sheet_t{label}"
+    ARM_SPECS[key] = ArmSpec(
+        key=key,
+        label=f"Sheet prior T={label}",
+        schedule=schedule.VANILLA,
+        initialization_prior="sheet",
+        initialization_temperature=value,
+    )
+    return key
+
+
+FULL_INITIALIZATION_ARMS = {
+    temperature: full_initialization_arm(temperature)
+    for temperature in INITIALIZATION_SPECS["full"]["temperatures"]
+}
+
+
 ONSET_SCAN: dict[int, str] = {
     0: "helix_mean_w20",
     1: "helix_mean_w20_from1",
@@ -446,6 +469,8 @@ def arm(key: str) -> ArmSpec:
         match := re.fullmatch(r"init_(uniform|helix|sheet)_t(.+)_short", key)
     ):
         short_trajectory_arms(float(match[2]))
+    if key not in ARM_SPECS and (match := re.fullmatch(r"init_sheet_t(.+)", key)):
+        full_initialization_arm(float(match[1]))
     if key not in ARM_SPECS:
         raise KeyError(f"unknown arm {key!r}; registered: {sorted(ARM_SPECS)}")
     return ARM_SPECS[key]

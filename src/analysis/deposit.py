@@ -150,9 +150,7 @@ def initialization_members(root: Path | None = None) -> list[Path]:
     from analysis.targets import INITIALIZATION_SPECS
 
     root = paths.INITIALIZATION if root is None else root
-    experiments = ["softness"] + [
-        f"full-T{t}" for t in INITIALIZATION_SPECS["full"]["temperatures"]
-    ]
+    experiments = ["softness"]
     members = []
     for name in experiments:
         directory = root / name
@@ -164,14 +162,8 @@ def initialization_members(root: Path | None = None) -> list[Path]:
         for filename in ("inputs.json", "calls.json", "manifest.json", "manifest.csv"):
             if (directory / filename).is_file():
                 members.append(directory / filename)
-        run_dirs = (
-            sorted(directory.glob("input[0-9][0-9]"))
-            if name == "softness"
-            else sorted(directory.glob("seed[0-9][0-9]"))
-        )
-        expected = INITIALIZATION_SPECS["full" if name.startswith("full-") else name][
-            "n_seeds" if name.startswith("full-") else "inputs"
-        ]
+        run_dirs = sorted(directory.glob("input[0-9][0-9]"))
+        expected = INITIALIZATION_SPECS[name]["inputs"]
         if len(run_dirs) != expected:
             raise ValueError(f"Expected {expected} collected runs in {directory}")
         for run in run_dirs:
@@ -229,12 +221,12 @@ def reference_members() -> list[Path]:
 
 def design_members() -> list[Path]:
     """Preserve the published campaigns' model outputs, never derived measurements."""
-    from analysis.targets import N_SEEDS, publication_campaigns
+    from analysis.targets import CRITIC_MODELS, N_SEEDS, publication_campaigns
     from analysis.targets import arm as get_arm
 
     members = []
     campaigns = list(publication_campaigns())
-    for file in sorted(paths.CAMPAIGNS.glob("*__init_*_short/protocol.json")):
+    for file in sorted(paths.CAMPAIGNS.glob("*__init_*/protocol.json")):
         protocol = json.loads(file.read_text())
         get_arm(protocol["arm"])
         pair = (protocol["target"], protocol["arm"])
@@ -283,8 +275,32 @@ def design_members() -> list[Path]:
         else:
             required.extend(
                 paths.campaign_complexes(target, arm) / f"seed{seed:02d}.pdb"
-                for seed in range(N_SEEDS)
+                for seed in range(protocol.get("n_seeds", N_SEEDS))
             )
+            if protocol.get("experiment") == "full":
+                required.append(paths.campaign_manifest(target, arm))
+                submission = directory / "submission"
+                required.extend(submission / name for name in ("protocol.json", "inputs.json"))
+                for seed in range(protocol["n_seeds"]):
+                    run = paths.campaign_run(target, arm, seed)
+                    required.extend(
+                        run / name
+                        for name in (
+                            "initialization.pt",
+                            "sequence-states.pt",
+                            "audit.json",
+                            "protocol.json",
+                            "complete.json",
+                            "critics.json",
+                            "step_trace.csv",
+                            "step_trace.jsonl",
+                            "collected.json",
+                            *(f"{name}.pdb" for name in CRITIC_MODELS),
+                        )
+                    )
+                    required.extend(run.glob("*.py"))
+                    if protocol["initialization_temperature"] != 1:
+                        required.append(submission / "inputs" / f"seed{seed:02d}-features.pt")
         missing = [p for p in required if not p.is_file()]
         if missing:
             raise FileNotFoundError(f"Incomplete campaign inputs: {missing[:5]}")
