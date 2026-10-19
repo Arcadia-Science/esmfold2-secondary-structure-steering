@@ -489,3 +489,33 @@ def test_shared_worker_methods_delegate_without_changing_inputs(monkeypatch):
         args == (worker.driver, worker.audit, worker.sources, bundle, protocol, modal_app.study)
         for args in calls
     )
+
+
+@pytest.mark.parametrize("sampling_steps,expected", [(0, (1, 50)), (1, (1, 1)), (7, (7, 7))])
+def test_shared_worker_preserves_default_solver_split_and_explicit_overrides(
+    monkeypatch, sampling_steps, expected
+):
+    import sys
+    from types import ModuleType, SimpleNamespace
+
+    from analysis import modal_app
+
+    design = ModuleType("analysis.design")
+    loop = ModuleType("analysis.design.loop")
+    loop.SAMPLING_STEPS, loop.CONFIDENCE_SAMPLING_STEPS = 1, 50
+    design.loop = loop
+    monkeypatch.setitem(sys.modules, "analysis.design", design)
+    monkeypatch.setitem(sys.modules, "analysis.design.loop", loop)
+    received = {}
+
+    def capture(**kwargs):
+        received.update(kwargs)
+        return None, None, [], [], ()
+
+    cls = modal_app.ESMFold2DesignModal._get_user_cls()
+    worker = cls()
+    worker.driver = SimpleNamespace(design=capture)
+    cls.design._get_raw_f()(
+        worker, target_sequence="A", sampling_steps=sampling_steps, stop_after_steps=1
+    )
+    assert (received["sampling_steps"], received["confidence_sampling_steps"]) == expected

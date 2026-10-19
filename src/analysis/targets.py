@@ -355,7 +355,7 @@ INITIALIZATION_SPECS = {
         "probability_margin": INITIALIZATION_MARGIN,
         "steps": SGD_STEPS,
         "optimization_solver_steps": 1,
-        "confidence_selection_solver_steps": 1,
+        "confidence_selection_solver_steps": 50,
         "critic_solver_steps": 200,
         "critic_num_loops": 3,
         "primary_critic": PRIMARY_CRITIC,

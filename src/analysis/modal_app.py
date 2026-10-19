@@ -298,7 +298,7 @@ class ESMFold2DesignModal:
             schedule=arm_spec.schedule,
             steps=int(steps),
             sampling_steps=solver_steps,
-            confidence_sampling_steps=solver_steps,
+            confidence_sampling_steps=sampling_steps or design_loop.CONFIDENCE_SAMPLING_STEPS,
             log_step_structures=log_step_structures,
             stop_after_steps=stop_after_steps,
             snapshot_sampling_steps=snapshot_sampling_steps,

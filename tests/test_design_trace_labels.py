@@ -130,7 +130,7 @@ def test_arm_labels_reach_live_and_final_logs_without_changing_optimization(
     [("short", 0, "uniform"), ("short", 1, "helix"), ("short", 2, "sheet"), ("full", 0, "sheet")],
 )
 @pytest.mark.parametrize("temperature", [1, 1.5, 2, 4])
-def test_initialization_worker_passes_registered_arm_to_design_loop(
+def test_initialization_worker_passes_registered_arm_and_solver_budgets_to_design_loop(
     tmp_path, monkeypatch, experiment, pair, prior, temperature
 ):
     names = [
@@ -206,3 +206,6 @@ def test_initialization_worker_passes_registered_arm_to_design_loop(
             SimpleNamespace(commit=lambda: None),
         )
     assert received["arm"] == expected_arm
+    assert received["sampling_steps"] == 1
+    if experiment == "full":
+        assert received["confidence_sampling_steps"] == 50
