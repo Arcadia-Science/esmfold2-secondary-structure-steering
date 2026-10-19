@@ -10,10 +10,12 @@ in.
 """
 
 from __future__ import annotations
+import re
 
 import pandas as pd
 import pytest
 from analysis import campaign
+from analysis.results import CampaignOutput
 
 
 def a_payload() -> dict[str, object]:
@@ -33,28 +35,28 @@ def a_payload() -> dict[str, object]:
 
 
 def test_routed_fields_stay_out_of_the_row() -> None:
-    record = campaign.design_record(
-        7, {key: value for key, value in a_payload().items() if key != "step_trace"}
-    )
-    assert record["seed"] == 7
-    for key in campaign.ROUTED_KEYS:
-        assert key not in record
+    payload = a_payload()
+    payload["step_complexes_gz"] = b"compressed structures"
+    output = CampaignOutput.from_payload(payload, seed=7)
+    assert output.row["seed"] == 7
+    for key in ("step_trace", "complex_pdb", "step_complexes_gz", "schedule"):
+        assert key not in output.row
+        assert key in payload, "Collection must not mutate the worker payload"
+    assert output.trace == payload["step_trace"]
+    assert output.complex_pdb == payload["complex_pdb"]
+    assert output.step_complexes_gz == payload["step_complexes_gz"]
 
 
 def test_a_populated_nested_field_is_allowed() -> None:
     """The per-critic dicts are nested and fine; only empty ones are not."""
-    record = campaign.design_record(
-        0,
-        {
-            "critic_iptm_by_model": {"fast": 0.9, "cutoff": 0.8},
-        },
-    )
-    assert record["critic_iptm_by_model"] == {"fast": 0.9, "cutoff": 0.8}
+    payload = a_payload()
+    payload["critic_iptm_by_model"] = {"fast": 0.9, "cutoff": 0.8}
+    output = CampaignOutput.from_payload(payload, seed=0)
+    assert output.row["critic_iptm_by_model"] == {"fast": 0.9, "cutoff": 0.8}
 
 
 def test_the_resulting_row_is_parquet_writable(tmp_path) -> None:
-    payload = {k: v for k, v in a_payload().items() if k != "step_trace"}
-    frame = pd.DataFrame([campaign.design_record(0, payload)])
+    frame = pd.DataFrame([CampaignOutput.from_payload(a_payload(), seed=0).row])
     path = tmp_path / "all_results.parquet"
     frame.to_parquet(path, index=False)
     assert pd.read_parquet(path).loc[0, "critic_plddt_binder"] == pytest.approx(87.4)
@@ -72,9 +74,8 @@ def test_the_resulting_row_is_parquet_writable(tmp_path) -> None:
 def test_an_empty_container_is_named_rather_than_written(
     field: str, value: object, where: str
 ) -> None:
-    with pytest.raises(ValueError, match="empty container"):
-        campaign.design_record(0, {"critic_iptm": 0.9, field: value})
-    assert campaign._empty_container_paths({field: value}) == [where]
+    with pytest.raises(ValueError, match=re.escape(where)):
+        CampaignOutput.from_payload({**a_payload(), field: value}, seed=0)
 
 
 def test_the_vanilla_schedule_is_exactly_what_broke_it() -> None:
@@ -82,7 +83,8 @@ def test_the_vanilla_schedule_is_exactly_what_broke_it() -> None:
     from analysis import targets
 
     unrouted = {"schedule": targets.arm("vanilla").schedule.to_dict()}
-    assert campaign._empty_container_paths(unrouted) == ["schedule.waypoints[0].weights"]
+    with pytest.raises(ValueError, match=r"schedule.waypoints\[0\].weights"):
+        CampaignOutput(unrouted, [], "")
 
 
 def test_the_archive_is_its_own_marker(tmp_path) -> None:

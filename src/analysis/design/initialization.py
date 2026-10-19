@@ -14,7 +14,7 @@ import time
 import zipfile
 from pathlib import Path
 
-from analysis.targets import INITIALIZATION_SPECS, PRIMARY_CRITIC, SGD_STEPS, short_trajectory_arms
+from analysis.targets import INITIALIZATION_SPECS, SGD_STEPS, short_trajectory_arms
 
 SETTINGS = INITIALIZATION_SPECS["softness"]
 
@@ -427,6 +427,7 @@ def design_prior(driver, audit, sources, bundle: dict, protocol: dict, archive) 
     from analysis.design.folding import prepare_folding_inputs
     from analysis.design.loop import design_binder
     from analysis.priors import AA, validate_initialization_settings
+    from analysis.results import DesignCompletion, DesignResult, RunSpec
 
     validate_initialization_settings(protocol)
     if protocol["aa_order"] != AA:
@@ -531,26 +532,19 @@ def design_prior(driver, audit, sources, bundle: dict, protocol: dict, archive) 
         (directory / f"{name}.pdb").write_text(result["complex"].to_pdb_string())
         records.append({k: v for k, v in result.items() if k not in ("complex", "logits")})
     (directory / "critics.json").write_text(json.dumps(records, indent=2))
-    primary = next(r for r in records if r["critic_name"] == PRIMARY_CRITIC)
-    metadata = {
-        "seed": seed,
-        "binder_length": length,
-        "steps": len(trace),
-        "arm": protocol["arm"],
-        "initialization_temperature": protocol["initialization_temperature"],
-        "probability_margin": protocol["probability_margin"],
-        "initial_sequence": sequence,
-        "binder_sequence": primary["designed_sequence"].split("|")[-1],
-        "primary_critic": PRIMARY_CRITIC,
-        "iptm": primary["iptm"],
-        "plddt": primary["plddt_binder"],
-        "selected_step": max((r for r in trace if r.iptm is not None), key=lambda r: r.iptm).step,
-    }
-    (directory / "complete.json").write_text(json.dumps(metadata, indent=2))
+    if len(trace) != protocol["steps"]:
+        raise ValueError(f"Expected {protocol['steps']} trace rows, observed {len(trace)}")
+    result = DesignResult.from_critics(
+        RunSpec.from_protocol(protocol, seed=seed),
+        records,
+        selected_step=max((r for r in trace if r.iptm is not None), key=lambda r: r.iptm).step,
+    )
+    completion = DesignCompletion.from_result(result, initial_sequence=sequence)
+    (directory / "complete.json").write_text(json.dumps(completion.to_record(), indent=2))
     archive.commit()
     print(
         f"T={protocol['initialization_temperature']} seed={seed} COMPLETE "
-        f"iptm={metadata['iptm']:.3f} plddt={metadata['plddt']:.1f}",
+        f"iptm={completion.iptm:.3f} plddt={completion.binder_plddt:.1f}",
         flush=True,
     )
     return pack()

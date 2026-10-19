@@ -51,7 +51,8 @@ from typing import Any
 import modal
 
 from analysis import loss_trace
-from analysis.targets import DEFAULT_TARGET, INITIALIZATION_SPECS, PRIMARY_CRITIC, SGD_STEPS
+from analysis.results import CampaignOutput, DesignResult, RunSpec
+from analysis.targets import DEFAULT_TARGET, INITIALIZATION_SPECS, SGD_STEPS
 from analysis.targets import arm as get_arm
 
 APP_NAME = os.environ.get("ESMFOLD2_SS_APP_NAME", "esmfold2-ss-steering")
@@ -318,41 +319,19 @@ class ESMFold2DesignModal:
                 "step_complexes_gz": _pack_structures(step_structures),
             }
 
-        by_critic = {record["critic_name"]: record for record in critic_results}
-        primary = by_critic[PRIMARY_CRITIC]
-        designed_sequence = primary["designed_sequence"]
-
-        return {
-            "seed": int(seed),
-            "steps": int(steps),
-            "target": target,
-            "arm": arm_spec.key,
-            "arm_label": arm_spec.label,
-            "schedule": arm_spec.schedule.to_dict(),
-            "target_length_residues": len(target_sequence),
-            "binder_name": BINDER_NAME,
-            "designed_sequence": designed_sequence,
-            "binder_sequence": designed_sequence.split("|")[-1],
-            "binder_length_residues": len(designed_sequence.split("|")[-1]),
-            "final_loss": primary["final_loss"],
-            "critic_name": PRIMARY_CRITIC,
-            "critic_iptm": primary["iptm"],
-            "critic_plddt_binder": primary["plddt_binder"],
-            "critic_plddt_target": primary["plddt_target"],
-            "critic_plddt_complex": primary["plddt_complex"],
-            "critic_distogram_iptm_proxy": primary["distogram_iptm_proxy"],
-            "critic_iptm_by_model": {name: record["iptm"] for name, record in by_critic.items()},
-            "critic_plddt_binder_by_model": {
-                name: record["plddt_binder"] for name, record in by_critic.items()
-            },
-            "critic_distogram_iptm_proxy_by_model": {
-                name: record["distogram_iptm_proxy"] for name, record in by_critic.items()
-            },
-            "design_steps_recorded": len(trajectory),
-            "step_trace": loss_trace.rows(trace),
-            "complex_pdb": primary["complex"].to_pdb_string(),
-            "step_complexes_gz": _pack_structures(step_structures),
-        }
+        result = DesignResult.from_critics(
+            RunSpec(target=target, arm=arm_spec.key, seed=int(seed), steps=int(steps)),
+            critic_results,
+            binder_name=BINDER_NAME,
+        )
+        primary = next(c for c in critic_results if c["critic_name"] == result.primary.name)
+        output = CampaignOutput.from_design(
+            result,
+            loss_trace.rows(trace),
+            primary["complex"].to_pdb_string(),
+            _pack_structures(step_structures),
+        )
+        return output.to_payload(schedule=arm_spec.schedule.to_dict())
 
     @modal.method()
     def design_prior(self, bundle: dict, protocol: dict) -> bytes:

@@ -23,13 +23,13 @@ import pandas as pd
 import typer
 
 from analysis import artifacts, composition, deposit, initialization, loss_trace, paths, priors
+from analysis.results import CampaignOutput, DesignCompletion, DesignResult, RunSpec
 from analysis.targets import (
     ARM_SPECS,
     CAMPAIGN_ARMS,
     CRITIC_MODELS,
     INITIALIZATION_TARGET,
     N_SEEDS,
-    PRIMARY_CRITIC,
     SGD_STEPS,
     TARGET_SPECS,
     full_initialization_arm,
@@ -46,51 +46,6 @@ app = typer.Typer(pretty_exceptions_enable=False, add_completion=False)
 
 REMOTE_CLASS = "ESMFold2DesignModal"
 POLL_SECONDS = 60
-
-ROUTED_KEYS = ("complex_pdb", "step_trace", "schedule")
-
-
-def _empty_container_paths(value: object, path: str = "") -> list[str]:
-    """Where an empty dict or list sits inside a nested payload.
-
-    Parquet cannot store a struct with no fields, so an empty mapping anywhere
-    inside a design record makes the whole table unwritable. The failure is
-    worth naming precisely because of where it hides: only an arm that sets no
-    steering weights produces one, so the vanilla arm breaks and every steered
-    arm writes fine.
-    """
-    if isinstance(value, dict):
-        if not value:
-            return [path or "<root>"]
-        found: list[str] = []
-        for key, child in value.items():
-            found.extend(_empty_container_paths(child, f"{path}.{key}" if path else str(key)))
-        return found
-    if isinstance(value, list | tuple):
-        if not value:
-            return [path or "<root>"]
-        found = []
-        for index, child in enumerate(value):
-            found.extend(_empty_container_paths(child, f"{path}[{index}]"))
-        return found
-    return []
-
-
-def design_record(seed: int, result: dict[str, Any]) -> dict[str, Any]:
-    """One per-design row: the payload minus everything routed elsewhere."""
-    record = {
-        "seed": seed,
-        **{key: value for key, value in result.items() if key not in ROUTED_KEYS},
-    }
-    empty = sorted(_empty_container_paths(record))
-    if empty:
-        raise ValueError(
-            f"design payload has empty container(s) at {empty}, which parquet "
-            f"cannot store. Either route the field in collect the way "
-            f"{list(ROUTED_KEYS)} are, or give it a scalar form in "
-            f"analysis.modal_app.design."
-        )
-    return record
 
 
 def read_manifest(path: Path, *, key: str) -> pd.DataFrame:
@@ -416,9 +371,12 @@ def _register_full_campaign(directory: Path) -> str:
     return arm
 
 
-def _full_design_result(source: Path, target: str, arm: str, seed: int, protocol: dict) -> dict:
-    """Validate a full worker archive and expose the ordinary design payload."""
+def _full_design_result(
+    source: Path, target: str, arm: str, seed: int, protocol: dict
+) -> CampaignOutput:
+    """Validate a full worker archive and separate its row from its artifacts."""
     original = protocol["source_protocol"]
+    expected = RunSpec.from_protocol(protocol, seed=seed)
     required = [
         source / name
         for name in (
@@ -438,17 +396,12 @@ def _full_design_result(source: Path, target: str, arm: str, seed: int, protocol
     run_protocol = initialization.read(source / "protocol.json")
     if any(run_protocol.get(key) != value for key, value in original.items()):
         raise ValueError(f"Run protocol differs from submitted protocol: {source}")
-    record = initialization.read(source / "complete.json")
-    for key, expected in {
-        "seed": seed,
-        "arm": arm,
-        "steps": protocol["sgd_steps"],
-        "initialization_temperature": protocol["initialization_temperature"],
-        "probability_margin": original["probability_margin"],
-        "primary_critic": PRIMARY_CRITIC,
-    }.items():
-        if record[key] != expected:
-            raise ValueError(f"Unexpected {key}: {source}")
+    completion = DesignCompletion.from_record(
+        initialization.read(source / "complete.json"),
+        target=run_protocol["target"],
+        prior=expected.initialization.prior,
+    )
+    completion.run.validate_against(expected)
     trace = initialization.trace(source / "step_trace.csv", protocol["sgd_steps"])
     if not trace.arm.eq(arm).all():
         raise ValueError(f"Unexpected full-design trace arm: {source}")
@@ -470,67 +423,34 @@ def _full_design_result(source: Path, target: str, arm: str, seed: int, protocol
     if (
         len(matched) != len(trace)
         or trace.loc[0, "binder sequence"] != matched.loc[0, "binder sequence"]
-        or record["initial_sequence"] != trace.loc[0, "binder sequence"]
-        or not trace["binder length (residues)"].eq(record["binder_length"]).all()
-        or record["binder_length"] != len(record["initial_sequence"])
+        or completion.initial_sequence != trace.loc[0, "binder sequence"]
+        or not trace["binder length (residues)"].eq(len(completion.initial_sequence)).all()
         or not trace["inversion model"].eq(matched["inversion model"]).all()
         or not np.allclose(trace["temperature (0-1)"], matched["temperature (0-1)"])
     ):
         raise ValueError(f"Unmatched initial sequence or optimization schedule: {source}")
     selected = trace.loc[trace["iptm (0-1)"].idxmax()]
-    sequence = selected["binder sequence"]
-    if record["selected_step"] != selected["step (index)"] or record["binder_sequence"] != sequence:
-        raise ValueError(f"Completion record differs from selected sequence: {source}")
-    scores = initialization.read(source / "critics.json")
-    by_critic = {score["critic_name"]: score for score in scores}
-    if len(scores) != len(CRITIC_MODELS) or set(by_critic) != set(CRITIC_MODELS):
-        raise ValueError(f"Missing or duplicate critics: {source}")
-    for name, score in by_critic.items():
-        if score["designed_sequence"] != original["target_sequence"] + "|" + sequence:
-            raise ValueError(f"Critic sequence differs from selected sequence: {source}")
-        if not np.isfinite([score["iptm"], score["plddt_binder"]]).all():
-            raise ValueError(f"Nonfinite critic scores: {source}")
-        composition.secondary_structure.checked_backbone(source / f"{name}.pdb", sequence)
-    primary = by_critic[PRIMARY_CRITIC]
-    if not np.allclose(
-        [record["iptm"], record["plddt"]], [primary["iptm"], primary["plddt_binder"]]
-    ):
-        raise ValueError(f"Completion record differs from primary critic: {source}")
+    result = DesignResult.from_critics(
+        expected,
+        initialization.read(source / "critics.json"),
+        selected_step=int(selected["step (index)"]),
+    )
+    result.validate_critics(CRITIC_MODELS)
+    if result.designed_sequence != original["target_sequence"] + "|" + selected["binder sequence"]:
+        raise ValueError(f"Critic sequence differs from selected sequence: {source}")
+    completion.validate_against(result)
+    for critic in result.critics:
+        composition.secondary_structure.checked_backbone(
+            source / f"{critic.name}.pdb", result.binder_sequence
+        )
 
     destination = paths.campaign_run(target, arm, seed)
     for file in source.rglob("*"):
         if file.is_file():
             _copy_preserved(file, destination / file.relative_to(source))
-    return {
-        "seed": seed,
-        "target": target,
-        "arm": arm,
-        "arm_label": get_arm(arm).label,
-        "steps": protocol["sgd_steps"],
-        "initialization_temperature": protocol["initialization_temperature"],
-        "initialization_prior": "sheet",
-        "probability_margin": original["probability_margin"],
-        "target_length_residues": len(original["target_sequence"]),
-        "designed_sequence": primary["designed_sequence"],
-        "binder_sequence": sequence,
-        "binder_length_residues": len(sequence),
-        "final_loss": primary["final_loss"],
-        "critic_name": PRIMARY_CRITIC,
-        "critic_iptm": primary["iptm"],
-        "critic_plddt_binder": primary["plddt_binder"],
-        "critic_plddt_target": primary["plddt_target"],
-        "critic_plddt_complex": primary["plddt_complex"],
-        "critic_distogram_iptm_proxy": primary["distogram_iptm_proxy"],
-        "critic_iptm_by_model": {name: s["iptm"] for name, s in by_critic.items()},
-        "critic_plddt_binder_by_model": {name: s["plddt_binder"] for name, s in by_critic.items()},
-        "critic_distogram_iptm_proxy_by_model": {
-            name: s["distogram_iptm_proxy"] for name, s in by_critic.items()
-        },
-        "selected_step": int(selected["step (index)"]),
-        "design_steps_recorded": len(trace),
-        "step_trace": trace.to_dict("records"),
-        "complex_pdb": (source / f"{PRIMARY_CRITIC}.pdb").read_text(),
-    }
+    return CampaignOutput.from_design(
+        result, trace.to_dict("records"), (source / f"{result.primary.name}.pdb").read_text()
+    )
 
 
 def _full_campaign_jobs(manifest: pd.DataFrame, target: str, arm: str, protocol: dict) -> Iterator:
@@ -734,7 +654,7 @@ def collect_campaign(target: str, arm: str) -> Collected:
     Each returned payload carries four kinds of thing, which go four places:
     the predicted complex to ``all_complexes``, the per-step loss log to
     ``step_trace.parquet``, the weight schedule nowhere, and everything else to
-    the per-design table via :func:`design_record`. The schedule is dropped
+    the per-design table via :class:`CampaignOutput`. The schedule is dropped
     rather than stored because it is one fact about the whole campaign, already
     written to ``protocol.json`` at spawn time.
 
@@ -776,12 +696,16 @@ def collect_campaign(target: str, arm: str) -> Collected:
         if error:
             failures.append(f"seed {int(row.seed)}: {error}")
             continue
-        pdb_text = result.pop("complex_pdb", "")
-        if pdb_text:
-            (complexes / f"seed{int(row.seed):02d}.pdb").write_text(pdb_text)
-        _write_step_complexes(target, arm, int(row.seed), result.pop("step_complexes_gz", b""))
-        trace_rows.extend(result.pop("step_trace"))
-        records.append(design_record(int(row.seed), result))
+        output = (
+            result
+            if isinstance(result, CampaignOutput)
+            else CampaignOutput.from_payload(result, seed=int(row.seed))
+        )
+        if output.complex_pdb:
+            (complexes / f"seed{int(row.seed):02d}.pdb").write_text(output.complex_pdb)
+        _write_step_complexes(target, arm, int(row.seed), output.step_complexes_gz)
+        trace_rows.extend(output.trace)
+        records.append(output.row)
 
     if not records:
         raise RuntimeError(f"No finished calls yet for {target} / {arm} ({pending} pending).")

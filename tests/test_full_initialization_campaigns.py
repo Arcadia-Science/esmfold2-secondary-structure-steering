@@ -148,7 +148,8 @@ def test_partial_full_collection_resumes_from_local_runs(full_campaign, monkeypa
         ("arm", "Unexpected full-design trace arm"),
         ("sequence", "Unmatched initial sequence"),
         ("schedule", "Unmatched initial sequence"),
-        ("critic", "Missing or duplicate critics"),
+        ("critic", "Missing or unexpected critics"),
+        ("confidence", "Expected ipTM from every campaign critic"),
         ("selected", "Critic sequence differs"),
         ("provenance", "Incomplete full design"),
     ],
@@ -166,10 +167,12 @@ def test_invalid_full_results_are_rejected_without_relabeling(full_campaign, cha
         trace.loc[0, column] = value
         files["step_trace.csv"] = trace.to_csv(index=False).encode()
         files["step_trace.jsonl"] = trace.to_json(orient="records", lines=True).encode()
-    elif change in {"critic", "selected"}:
+    elif change in {"critic", "selected", "confidence"}:
         critics = json.loads(files["critics.json"])
         if change == "critic":
             critics.pop()
+        elif change == "confidence":
+            critics[-1]["iptm"] = None
         else:
             critics[0]["designed_sequence"] = "A|II"
         files["critics.json"] = json.dumps(critics).encode()
