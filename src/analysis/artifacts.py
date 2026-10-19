@@ -20,7 +20,7 @@ from pathlib import Path
 import pandas as pd
 
 from analysis import deposit, loss_trace, paths
-from analysis.targets import ARM_SPECS, TARGET_SPECS
+from analysis.targets import ARM_SPECS, CRITIC_MODELS, TARGET_SPECS
 
 
 @dataclass(frozen=True)
@@ -172,6 +172,24 @@ def load_all(
             "Supply the preserved model inputs; see analysis.deposit for archive availability."
         )
     return pd.concat(frames, ignore_index=True)
+
+
+def critic_scores(target_key: str, arm: str) -> pd.DataFrame:
+    """One row per design and critic, using the campaign analysis units."""
+    rows = []
+    for record in load_campaign(target_key, arm).to_dict("records"):
+        for critic in CRITIC_MODELS:
+            rows.append(
+                {
+                    "target": target_key,
+                    "arm": arm,
+                    "seed": record["seed"],
+                    "critic": critic,
+                    "iptm (0-1)": record["critic_iptm_by_model"][critic],
+                    "binder pLDDT (0-100)": record["critic_plddt_binder_by_model"][critic],
+                }
+            )
+    return pd.DataFrame(rows)
 
 
 def derived(name: str) -> Path:

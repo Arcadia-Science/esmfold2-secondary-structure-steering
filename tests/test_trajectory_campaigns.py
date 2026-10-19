@@ -17,6 +17,7 @@ from analysis import (
     initialization,
     loss_trace,
     paths,
+    publication,
     targets,
 )
 
@@ -174,3 +175,29 @@ def test_partial_collection_can_resume(collected, monkeypatch, trajectory_archiv
     )
     campaign.collect_initialization(collected.parent, "short", 1)
     assert artifacts.status("pdl1_igv", arm).is_analysable
+
+
+def test_short_report_excludes_bad_geometry_but_keeps_entropy(collected, monkeypatch):
+    campaign.import_short_trajectories(collected)
+    monkeypatch.setitem(targets.INITIALIZATION_SPECS["short"], "updates", 2)
+
+    def measured(target, arm):
+        trace = loss_trace.load_campaign(target, arm)
+        trace["helix (fraction 0-1)"] = np.where(trace.seed == 0, 0.2, 0.8)
+        trace["sheet (fraction 0-1)"] = 0.1
+        trace["coil (fraction 0-1)"] = 0.9 - trace["helix (fraction 0-1)"]
+        trace["geometry pass (bool)"] = trace.seed == 0
+        trace["sequence entropy (bits)"] = np.where(trace.seed == 0, 4.0, 3.0)
+        return trace
+
+    def unrelated(*args):
+        pytest.fail("Short report tried to load full or softness inputs")
+
+    monkeypatch.setattr(composition, "measure_steps", measured)
+    monkeypatch.setattr(composition, "load", unrelated)
+    monkeypatch.setattr(initialization, "measure_softness", unrelated)
+    report = publication.short_initialization_report()["short_step1_means"]
+    assert set(report) == set(targets.SHORT_TRAJECTORY_ARMS.values())
+    for outcome in report.values():
+        assert outcome["helix (fraction 0-1)"] == pytest.approx(0.2)
+        assert outcome["sequence entropy (bits)"] == 3.5

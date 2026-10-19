@@ -2,6 +2,7 @@
 
 import io
 import json
+import shutil
 import zipfile
 from types import SimpleNamespace
 
@@ -16,6 +17,7 @@ from analysis import (
     initialization,
     loss_trace,
     paths,
+    publication,
     targets,
 )
 from analysis.priors import AA
@@ -88,6 +90,12 @@ def test_full_outputs_round_trip_through_shared_readers_and_archive(full_campaig
     loss_trace.validate_steps(trace, n_seeds=2, steps=3)
     scores = artifacts.load_campaign("pdl1_igv", arm)
     assert set(scores.loc[0, "critic_iptm_by_model"]) == set(targets.CRITIC_MODELS)
+    critics = artifacts.critic_scores("pdl1_igv", arm)
+    assert len(critics) == 2 * len(targets.CRITIC_MODELS)
+    assert not critics.duplicated(["target", "arm", "seed", "critic"]).any()
+    assert set(critics.critic) == set(targets.CRITIC_MODELS)
+    assert critics["iptm (0-1)"].eq(0.9).all()
+    assert critics["binder pLDDT (0-100)"].eq(85).all()
     for seed, payload in full_campaign.payloads.items():
         with zipfile.ZipFile(io.BytesIO(payload)) as archive:
             for name in archive.namelist():
@@ -110,6 +118,39 @@ def test_full_outputs_round_trip_through_shared_readers_and_archive(full_campaig
     (paths.campaign_run("pdl1_igv", arm, 0) / "audit.json").unlink()
     with pytest.raises(FileNotFoundError, match="Incomplete campaign"):
         deposit.design_members()
+
+
+def test_full_analysis_needs_only_requested_campaigns(full_campaign, monkeypatch):
+    arm = full_campaign.arm
+    campaign.collect_campaign("pdl1_igv", arm)
+    monkeypatch.setattr(targets, "N_SEEDS", 2)
+    monkeypatch.setattr(targets, "SGD_STEPS", 3)
+    # Supply a control alongside the prior, without short or softness inputs.
+    artifacts.load_campaign("pdl1_igv", arm).assign(arm="vanilla").to_parquet(
+        paths.campaign_results("pdl1_igv", "vanilla")
+    )
+    shutil.copytree(
+        paths.campaign_complexes("pdl1_igv", arm),
+        paths.campaign_complexes("pdl1_igv", "vanilla"),
+    )
+    control = loss_trace.load_campaign("pdl1_igv", arm).assign(arm="vanilla")
+    control["sequence entropy (bits)"] = [4.0, 1.9, 1.8, 4.0, 4.0, 1.9]
+    control.to_parquet(paths.campaign_trace("pdl1_igv", "vanilla"))
+
+    def unrelated(*args):
+        pytest.fail("Full analysis tried to load short or softness inputs")
+
+    monkeypatch.setattr(composition, "measure_steps", unrelated)
+    monkeypatch.setattr(initialization, "measure_softness", unrelated)
+    report = publication.full_initialization_report(["vanilla", arm])
+    assert set(report["full_optimization"]) == {"vanilla", arm}
+    for outcome in report["full_optimization"].values():
+        assert outcome["n"] == 2
+        assert outcome["mean"]["iptm (0-1)"] == pytest.approx(0.9)
+        assert outcome["mean"]["binder pLDDT (0-100)"] == 85
+        assert outcome["joint_screen_pass_count"] == 0
+    assert report["median_first_step_below_2_bits"] == {"vanilla": 1.5, arm: None}
+    json.dumps(report, allow_nan=False)
 
 
 def test_partial_full_collection_resumes_from_local_runs(full_campaign, monkeypatch):

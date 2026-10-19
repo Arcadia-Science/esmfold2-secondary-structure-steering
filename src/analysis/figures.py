@@ -467,6 +467,61 @@ STRIP_JITTER_SEED = 0
 """Fixed so the jitter is identical every render; the offsets carry no meaning."""
 
 
+def arm_label(arm: str) -> str:
+    """Label mixed comparisons of steering weights and initialization priors."""
+    from analysis.targets import arm as get_arm
+
+    if arm == "vanilla":
+        return "Unsteered"
+    if arm in ARM_LABELS:
+        return f"Loss weight {ARM_LABELS[arm]}"
+    return get_arm(arm).label
+
+
+def outcome_panel(
+    designs: pd.DataFrame,
+    means: pd.DataFrame,
+    arms: list[str],
+    metric: str,
+    *,
+    threshold: float | None = None,
+) -> plt.Figure:
+    """One outcome panel with individual designs and caller-computed arm means.
+
+    The caller selects a target, orders the arms and supplies any screening
+    cutoff. Separate panels let Quarto arrange the figure and captions.
+    """
+    spec = METRICS[metric]
+    fig, axis = plt.subplots(figsize=(6.5, 4.5), layout="constrained")
+    rng = np.random.default_rng(STRIP_JITTER_SEED)
+    for position, arm in enumerate(arms):
+        color = ARM_COLORS[arm] if arm in ARM_COLORS else _prior_style(arm)[1]
+        values = designs.loc[designs.arm == arm, spec.column]
+        axis.scatter(
+            position + rng.uniform(-0.14, 0.14, len(values)),
+            values,
+            color=color,
+            alpha=0.75,
+            s=30,
+        )
+        mean = means.loc[arm, spec.column]
+        axis.plot([position - 0.23, position + 0.23], [mean, mean], color="black", lw=2)
+    if threshold is not None:
+        axis.axhline(threshold, color="#999999", ls="--", lw=1)
+    labels = [
+        arm_label(arm).replace("weight ", "weight\n").replace("prior T", "prior\nT") for arm in arms
+    ]
+    axis.set(
+        xticks=range(len(arms)),
+        xticklabels=labels,
+        ylabel=spec.design_label,
+        ylim=(0, 100) if metric == "plddt" else (0, 1),
+        xlim=(-0.5, len(arms) - 0.5),
+    )
+    axis.spines[["top", "right"]].set_visible(False)
+    return fig
+
+
 def scan_strip(
     designs: pd.DataFrame,
     target: str,
