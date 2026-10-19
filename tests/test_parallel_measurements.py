@@ -9,7 +9,7 @@ from dataclasses import asdict
 import numpy as np
 import pandas as pd
 import pytest
-from analysis import paths, priors, rcsb, reference, secondary_structure
+from analysis import paths, priors, rcsb, secondary_structure
 from analysis.parallel import starmap
 from biotite.structure.io import pdb, pdbx
 
@@ -103,14 +103,6 @@ def test_prior_worker_errors_propagate(reference_inputs):
     missing = reference_inputs / "missing.cif.gz"
     with pytest.raises(FileNotFoundError):
         list(starmap(priors.count_entry, [(missing, ("B",))], workers=2))
-
-
-@pytest.mark.parametrize("workers", [0, -1, 1.5, True])
-def test_invalid_workers_fail_before_fetching_inputs(tmp_path, monkeypatch, workers):
-    monkeypatch.setattr(paths, "REFERENCE", tmp_path)
-    for function in (rcsb.build, reference.composition, priors.from_reference):
-        with pytest.raises(ValueError, match="workers"):
-            function(workers=workers)
 
 
 def test_empty_tasks_do_not_start_a_pool():

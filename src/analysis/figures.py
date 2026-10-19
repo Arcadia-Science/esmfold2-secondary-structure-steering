@@ -1078,9 +1078,6 @@ def schedule_traces(
     at opposite ends of one over the step it is withdrawn.
     """
     spec = TRACE_METRICS[metric]
-    missing = [step for step in drawn if step not in scan]
-    if missing:
-        raise KeyError(f"steps {missing} are not in the scan; it holds {sorted(scan)}")
     scaled = {key: plt.rcParams[key] * FONT_SCALE for key in FONT_SIZE_KEYS}
     with plt.rc_context(scaled):
         medians = trace.groupby(["arm", "step (index)"])[spec.column].median().reset_index()
@@ -1388,11 +1385,6 @@ def _composition_stack(
             f"and {target or 'all targets'} has {counts}"
         )
 
-    absent = [
-        state.natural_column for state in STATES.values() if state.natural_column not in natural
-    ]
-    if absent:
-        raise KeyError(f"the natural reference set is missing {absent}")
     means = pd.DataFrame(
         {
             state.key: [natural[state.natural_column].mean()]
@@ -1582,8 +1574,6 @@ def matched_composition_panel(
     final: pd.DataFrame, means: pd.DataFrame, arms: list[str], metric: str
 ) -> plt.Figure:
     """Connect matched starts at one caller-selected state; black bars show supplied means."""
-    if metric not in {"helix", "sheet"}:
-        raise ValueError("Expected helix or sheet composition")
     column = TRACE_METRICS[metric].column
     values = 100 * final.pivot(index="seed", columns="arm", values=column).reindex(columns=arms)
     fig, axis = plt.subplots(figsize=(5.5, 4.5), layout="constrained")

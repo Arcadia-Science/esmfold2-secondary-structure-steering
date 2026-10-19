@@ -10,7 +10,6 @@ metadata without a Modal account.
 """
 
 from __future__ import annotations
-import math
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -369,8 +368,6 @@ INITIALIZATION_SPECS = {
 
 def short_trajectory_arms(temperature: float = 1.0) -> dict[str, str]:
     """Register the matched prior conditions, keeping the uniform control distinct."""
-    if not math.isfinite(temperature) or temperature <= 0:
-        raise ValueError("Initialization temperature must be positive and finite")
     value = float(temperature)
     label = str(int(value)) if value.is_integer() else str(value)
     arms = {
@@ -392,8 +389,6 @@ SHORT_TRAJECTORY_ARMS = short_trajectory_arms()
 
 def full_initialization_arm(temperature: float = 1.0) -> str:
     """Register a full sheet-prior campaign at the requested temperature."""
-    if not math.isfinite(temperature) or temperature <= 0:
-        raise ValueError("Initialization temperature must be positive and finite")
     value = float(temperature)
     label = str(int(value)) if value.is_integer() else str(value)
     key = f"init_sheet_t{label}"
@@ -457,22 +452,18 @@ unsteered basin faster than it commits to the steered one.
 
 
 def target(key: str) -> TargetSpec:
-    """Look up one target, with a message naming the valid keys on failure."""
-    if key not in TARGET_SPECS:
-        raise KeyError(f"unknown target {key!r}; registered: {sorted(TARGET_SPECS)}")
+    """Look up one target."""
     return TARGET_SPECS[key]
 
 
 def arm(key: str) -> ArmSpec:
-    """Look up one loss arm, with a message naming the valid keys on failure."""
+    """Look up one arm, registering initialization conditions as needed."""
     if key not in ARM_SPECS and (
         match := re.fullmatch(r"init_(uniform|helix|sheet)_t(.+)_short", key)
     ):
         short_trajectory_arms(float(match[2]))
     if key not in ARM_SPECS and (match := re.fullmatch(r"init_sheet_t(.+)", key)):
         full_initialization_arm(float(match[1]))
-    if key not in ARM_SPECS:
-        raise KeyError(f"unknown arm {key!r}; registered: {sorted(ARM_SPECS)}")
     return ARM_SPECS[key]
 
 

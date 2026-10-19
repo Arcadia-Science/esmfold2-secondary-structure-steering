@@ -40,11 +40,8 @@ from dataclasses import dataclass
 
 import torch
 
-MIN_BINDER_LENGTH = 16
-
 HELIX_PENALTY_OFFSET = 4
 HELIX_PENALTY_CUTOFF_ANGSTROM = 7.0
-HELIX_PENALTY_TOPK = 12
 
 
 HELIX_FAMILY = "helix penalty"
@@ -54,8 +51,6 @@ def contact_probability_matrix(
     distogram_logits: torch.Tensor, bin_distance: torch.Tensor, cutoff: float
 ) -> torch.Tensor:
     """P(Ca-Ca distance < cutoff) per residue pair, summed over the near bins."""
-    if cutoff <= 0:
-        raise ValueError(f"cutoff must be positive, got {cutoff}")
     contact_bins = bin_distance < cutoff
     if not bool(contact_bins.any()):
         raise ValueError(f"cutoff {cutoff} A excludes every distogram bin")
@@ -138,9 +133,7 @@ TERM_SPECS: dict[str, SteeringTermSpec] = {
 
 
 def term(key: str) -> SteeringTermSpec:
-    """Look up one steering term, naming the valid keys on failure."""
-    if key not in TERM_SPECS:
-        raise KeyError(f"unknown steering term {key!r}; registered: {sorted(TERM_SPECS)}")
+    """Look up one steering term."""
     return TERM_SPECS[key]
 
 
@@ -175,17 +168,8 @@ def compute_steering_losses(
         raise KeyError(
             f"unknown steering term(s) {sorted(unknown)}; registered: {sorted(TERM_SPECS)}"
         )
-    if binder_length < MIN_BINDER_LENGTH:
-        raise ValueError(
-            f"binder_length {binder_length} is below MIN_BINDER_LENGTH "
-            f"{MIN_BINDER_LENGTH}; the top-{HELIX_PENALTY_TOPK} selections need "
-            f"at least that many scored residues"
-        )
     if distogram_logits.size(1) < binder_length:
-        raise ValueError(
-            f"distogram covers {distogram_logits.size(1)} residues, fewer than "
-            f"the binder_length {binder_length}"
-        )
+        raise ValueError("Distogram covers fewer than the requested binder residues")
 
     bin_distance = bin_distance.to(device=distogram_logits.device, dtype=distogram_logits.dtype)
     terms: dict[str, torch.Tensor] = {}

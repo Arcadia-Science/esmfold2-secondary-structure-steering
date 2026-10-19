@@ -6,7 +6,7 @@ import json
 import pandas as pd
 
 from analysis import paths
-from analysis.parallel import DEFAULT_WORKERS, validate_workers
+from analysis.parallel import DEFAULT_WORKERS
 
 COMPOSITION_TABLE = "natural_binder_composition.csv"
 PAIRS_TABLE = "natural_binder_pairs.csv"
@@ -19,7 +19,6 @@ def table(name: str, *, workers: int = DEFAULT_WORKERS) -> pd.DataFrame:
     """Measure the requested reference table in memory; ignore old CSV caches."""
     from analysis import deposit, rcsb
 
-    validate_workers(workers)
     if name not in (COMPOSITION_TABLE, PAIRS_TABLE):
         raise ValueError(f"Unknown reference table: {name}")
     if not paths.reference_table(rcsb.SEARCH_HITS).is_file():

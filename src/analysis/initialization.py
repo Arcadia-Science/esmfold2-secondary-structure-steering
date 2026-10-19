@@ -18,8 +18,6 @@ from analysis.priors import (
     from_reference,
     matched_probabilities,
     paired_inputs,
-    validate_initialization_settings,
-    validate_temperature,
 )
 from analysis.targets import (
     CRITIC_MODELS,
@@ -213,8 +211,6 @@ def protocol(root: Path, experiment: str) -> dict:
             raise ValueError(
                 f"Protocol mismatch for {root}: {key}={value.get(key)!r}, expected {wanted!r}"
             )
-    if experiment != "softness":
-        validate_initialization_settings(value)
     return value
 
 
@@ -354,13 +350,15 @@ def digest(path: Path) -> str:
 
 def temperature_label(temperature: float) -> str:
     """Use the same label for integer and floating-point spellings of a temperature."""
-    validate_temperature(temperature)
     value = float(temperature)
     return str(int(value)) if value.is_integer() else str(value)
 
 
 def experiment_dir(root: Path, experiment: str, temperature: float) -> Path:
-    validate_experiment(experiment, temperature)
+    if experiment == "softness" and temperature != 1:
+        raise ValueError(
+            "Temperature is only configurable for short and full initialization designs"
+        )
     if experiment == "full" or (experiment == "short" and temperature != 1):
         return root / f"{experiment}-T{temperature_label(temperature)}"
     return root / experiment
@@ -374,7 +372,6 @@ def source_hashes() -> dict:
 
 
 def prepare_inputs(root: Path, experiment: str, temperature: float) -> Path:
-    validate_experiment(experiment, temperature)
     directory = experiment_dir(root, experiment, temperature)
     if (directory / "protocol.json").exists():
         raise FileExistsError(f"Already prepared: {directory}. Reuse it or select a new --root.")
@@ -394,7 +391,6 @@ def prepare_inputs(root: Path, experiment: str, temperature: float) -> Path:
         if prior["amino_acid_order"] != AA:
             raise ValueError("Unexpected prior amino-acid order")
         protocol["initialization_temperature"] = float(temperature)
-        validate_initialization_settings(protocol)
         protocol["tempering"] = "q_T = normalize(q**(1/initialization_temperature))"
         protocol["initialization"] = "q_T + b_i*(onehot(chosen_aa)-uniform19)"
         protocol["boost_rule"] = "max(0, max_other(q_T) - q_T(chosen_aa) + probability_margin)"
@@ -483,19 +479,8 @@ def prepare_inputs(root: Path, experiment: str, temperature: float) -> Path:
     return directory
 
 
-def validate_experiment(experiment: str, temperature: float) -> None:
-    if experiment not in INITIALIZATION_SPECS:
-        raise ValueError(f"Unknown initialization experiment: {experiment}")
-    validate_temperature(temperature)
-    if experiment == "softness" and temperature != 1:
-        raise ValueError(
-            "Temperature is only configurable for short and full initialization designs"
-        )
-
-
 def prepared_jobs(root: Path, experiment: str, temperature: float) -> tuple[dict, list[dict]]:
     """Validate preserved inputs and derive worker arguments before any submission."""
-    validate_experiment(experiment, temperature)
     directory = experiment_dir(root, experiment, temperature)
     protocol = read(directory / "protocol.json")
     if protocol["source_sha256"] != source_hashes():
@@ -509,8 +494,6 @@ def prepared_jobs(root: Path, experiment: str, temperature: float) -> tuple[dict
     actual_id = hashlib.sha256(json.dumps(original, sort_keys=True).encode()).hexdigest()[:16]
     if recorded_id != actual_id:
         raise ValueError("Prepared protocol changed; prepare inputs in a new --root")
-    if experiment != "softness":
-        validate_initialization_settings(protocol)
     prior = from_reference() if experiment != "softness" else None
     if prior is not None:
         current = hashlib.sha256(json.dumps(prior, sort_keys=True).encode()).hexdigest()

@@ -122,52 +122,11 @@ def test_uniform_prior_and_tied_maximum(temperature):
     assert p[0, 0] - p[0, 1] == pytest.approx(0.001)
 
 
-@pytest.mark.parametrize("temperature", [0, -1, float("nan"), float("inf"), -float("inf")])
-def test_invalid_temperature_is_rejected_before_preparation(tmp_path, prior, temperature):
-    for initialize in (minimum_boosts, matched_probabilities):
-        with pytest.raises(ValueError, match="temperature"):
-            initialize(prior["helix"], "I", temperature=temperature)
-    with pytest.raises(ValueError, match="temperature"):
-        tempered_prior(prior["helix"], temperature)
-    for experiment in ("short", "full"):
-        with pytest.raises(ValueError, match="temperature"):
-            workflow.prepare_inputs(tmp_path, experiment, temperature)
-    assert not list(tmp_path.iterdir())
-
-
 def test_sharp_temperatures_reject_infeasible_inputs(prior):
     with pytest.raises(ValueError, match="nonpositive"):
         matched_probabilities(prior["helix"], "A", temperature=0.1)
     with pytest.raises(ValueError, match="nonpositive"):
         matched_probabilities(prior["helix"], "A", temperature=1e-300)
-
-
-@pytest.mark.parametrize("margin", [0, -0.001, float("nan"), float("inf")])
-def test_invalid_margin_is_rejected(prior, margin):
-    with pytest.raises(ValueError, match="margin"):
-        matched_probabilities(prior["helix"], "I", margin=margin)
-
-
-@pytest.mark.parametrize("sequence", ["", "C", "X", "a"])
-def test_invalid_sequence_is_rejected(prior, sequence):
-    with pytest.raises(ValueError, match="sequence"):
-        matched_probabilities(prior["helix"], sequence)
-
-
-@pytest.mark.parametrize(
-    "q",
-    [
-        np.ones(18) / 18,
-        np.ones(19),
-        np.zeros(19),
-        np.full(19, np.nan),
-        np.full(19, np.inf),
-        np.array([-1] + [2 / 18] * 18),
-    ],
-)
-def test_invalid_prior_is_rejected(q):
-    with pytest.raises(ValueError):
-        matched_probabilities(q, "I")
 
 
 def test_infeasible_boost_is_rejected_without_clipping():

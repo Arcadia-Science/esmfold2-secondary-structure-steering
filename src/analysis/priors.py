@@ -8,38 +8,21 @@ from biotite.sequence import ProteinSequence
 
 from analysis import paths, rcsb, reference
 from analysis import secondary_structure as ss
-from analysis.parallel import DEFAULT_WORKERS, starmap, validate_workers
+from analysis.parallel import DEFAULT_WORKERS, starmap
 from analysis.targets import INITIALIZATION_MARGIN, INITIALIZATION_SPECS
 
 AA = list("ADEFGHIKLMNPQRSTVWY")
 
 
-def _probability_vector(q: np.ndarray) -> np.ndarray:
-    q = np.asarray(q, dtype=float)
-    if q.shape != (len(AA),) or not np.isfinite(q).all() or not (q > 0).all():
-        raise ValueError("Expected 19 positive finite probabilities excluding cysteine")
-    if not np.isclose(q.sum(), 1, atol=1e-12, rtol=1e-9):
-        raise ValueError("Expected a normalized amino-acid prior")
-    return q
-
-
-def validate_temperature(temperature: float) -> None:
-    if not np.isfinite(temperature) or temperature <= 0:
-        raise ValueError("Initialization temperature must be positive and finite")
-
-
 def tempered_prior(q: np.ndarray, temperature: float = 1.0) -> np.ndarray:
     """Return normalized q**(1/temperature); values above one flatten the prior."""
-    validate_temperature(temperature)
-    q = _probability_vector(q)
+    q = np.asarray(q, dtype=float)
     if temperature == 1:
         return q.copy()
     scores = np.log(q)
     with np.errstate(over="ignore", under="ignore"):
         qt = np.exp((scores - scores.max()) / temperature)
     qt /= qt.sum()
-    if not (qt > 0).all():
-        raise ValueError("Initialization temperature produces nonpositive prior probabilities")
     return qt
 
 
@@ -60,10 +43,6 @@ def minimum_boosts(
 
 
 def _minimum_boosts(q: np.ndarray, sequence: str, margin: float) -> np.ndarray:
-    if not np.isfinite(margin) or margin <= 0:
-        raise ValueError("Probability margin must be positive and finite")
-    if not sequence or any(aa not in AA for aa in sequence):
-        raise ValueError("Expected a nonempty sequence of canonical, non-cysteine amino acids")
     chosen = np.asarray([AA.index(aa) for aa in sequence])
     competitors = np.broadcast_to(q, (len(sequence), len(AA))).copy()
     competitors[np.arange(len(sequence)), chosen] = -np.inf
@@ -93,14 +72,6 @@ def matched_probabilities(
     if not np.array_equal(p.argmax(-1), chosen):
         raise ValueError("Probability margin is too small to preserve the requested hard sequence")
     return p
-
-
-def validate_initialization_settings(protocol: dict) -> None:
-    """Require a positive finite temperature and probability margin."""
-    validate_temperature(protocol.get("initialization_temperature", 0))
-    margin = protocol.get("probability_margin", 0)
-    if not np.isfinite(margin) or margin <= 0:
-        raise ValueError("Probability margin must be positive and finite")
 
 
 def paired_inputs() -> list[dict]:
@@ -159,7 +130,6 @@ def from_reference(natural=None, *, workers: int = DEFAULT_WORKERS) -> dict:
 
 def count_reference(natural=None, *, workers: int = DEFAULT_WORKERS) -> dict[str, np.ndarray]:
     """Pool canonical non-cysteine residue counts by DSSP state across reference chains."""
-    validate_workers(workers)
     if natural is None:
         natural = reference.composition(workers=workers)
     natural = natural[natural.in_reference_set == 1]

@@ -51,35 +51,18 @@ def chain_plddt(
     pLDDT threshold use.
     """
     if plddt.ndim != 2:
-        raise ValueError(
-            f"expected plddt shaped (batch, residues), got {tuple(plddt.shape)}. "
-            f"ESMFold2 returns one value per residue here; plddt_per_atom is a "
-            f"separate output and is not interchangeable with it."
-        )
-    if target_length < 1 or binder_length < 1:
-        raise ValueError(
-            f"both chains must be non-empty, got target_length={target_length} "
-            f"and binder_length={binder_length}"
-        )
+        raise ValueError("Expected one value per residue in a (batch, residues) tensor")
     total = target_length + binder_length
     if plddt.size(1) < total:
         raise ValueError(
-            f"plddt covers {plddt.size(1)} residues, fewer than the "
-            f"{total} of target ({target_length}) plus binder ({binder_length})"
+            f"pLDDT covers {plddt.size(1)} residues, fewer than the two chains' {total}"
         )
 
     values = plddt[batch_index, :total].detach().float().cpu()
     if not bool(torch.isfinite(values).all()):
-        raise ValueError(
-            f"plddt for batch element {batch_index} contains non-finite values, "
-            f"which means the fold failed rather than scored badly"
-        )
+        raise ValueError("Model returned non-finite residue pLDDT")
     if float(values.max()) > 1.0:
-        raise ValueError(
-            f"plddt max is {float(values.max()):.3f}, so this tensor is not on "
-            f"the 0 to 1 scale this function expects. Pass "
-            f'output["plddt"] rather than an already-scaled copy.'
-        )
+        raise ValueError("Expected residue pLDDT on the 0 to 1 scale")
 
     return ChainPlddt(
         complex_plddt=float(values.mean()) * PLDDT_SCALE,

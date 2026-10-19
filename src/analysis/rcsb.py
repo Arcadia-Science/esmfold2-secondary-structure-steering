@@ -21,7 +21,7 @@ import numpy as np
 import pandas as pd
 
 from analysis import paths, secondary_structure
-from analysis.parallel import DEFAULT_WORKERS, starmap, validate_workers
+from analysis.parallel import DEFAULT_WORKERS, starmap
 
 SEARCH_URL = "https://search.rcsb.org/rcsbsearch/v2/query"
 GRAPHQL_URL = "https://data.rcsb.org/graphql"
@@ -566,7 +566,6 @@ def build(
     Measurements use spawned processes, including from notebooks; ``workers=1``
     runs serially. Downloads use their separate thread pool before measurements.
     """
-    validate_workers(workers)
     paths.REFERENCE.mkdir(parents=True, exist_ok=True)
     hits, representatives, n_clusters = search_hits(progress=progress)
 

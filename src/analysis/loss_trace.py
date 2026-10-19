@@ -52,19 +52,10 @@ AGGREGATE_LOSS_UNITS: dict[str, str] = {
 
 
 def loss_unit(name: str) -> str:
-    """The unit of one logged loss, for the column header.
-
-    Raises rather than guessing, so a new loss term cannot enter the log with an
-    unlabelled column.
-    """
+    """The unit of one logged loss, for the column header."""
     if name in AGGREGATE_LOSS_UNITS:
         return AGGREGATE_LOSS_UNITS[name]
-    if name in TERM_SPECS:
-        return TERM_SPECS[name].unit
-    raise KeyError(
-        f"no unit registered for loss {name!r}; known: "
-        f"{sorted(set(AGGREGATE_LOSS_UNITS) | set(TERM_SPECS))}"
-    )
+    return TERM_SPECS[name].unit
 
 
 def loss_column(name: str) -> str:
@@ -74,8 +65,6 @@ def loss_column(name: str) -> str:
 
 def weight_column(name: str) -> str:
     """Column header for one steering weight, unit included."""
-    if name not in TERM_SPECS:
-        raise KeyError(f"unknown steering term {name!r}; registered: {sorted(TERM_SPECS)}")
     return f"weight {name} (dimensionless)"
 
 

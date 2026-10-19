@@ -41,8 +41,6 @@ def prior_logits(q, sequence, model_aa_order, optimization_temperature, *, tempe
 
     if len(model_aa_order) != 20 or set(model_aa_order) != set(AA) | {"C"}:
         raise ValueError("Expected the model's 20 canonical amino acids")
-    if not math.isfinite(optimization_temperature) or optimization_temperature <= 0:
-        raise ValueError("Optimization temperature must be positive and finite")
     p19 = matched_probabilities(q, sequence, temperature=temperature, margin=margin)
     probabilities = torch.zeros(1, len(sequence), 20, dtype=torch.float32)
     indices = [model_aa_order.index(aa) for aa in AA]
@@ -259,10 +257,9 @@ def design_pair(driver, audit, sources, bundle: dict, protocol: dict, archive) -
     from analysis.design.losses import get_mid_points
     from analysis.design.sequence import sequence_to_one_hot
     from analysis.design.structure import build_complex
-    from analysis.priors import AA, validate_initialization_settings
+    from analysis.priors import AA
     from analysis.steering import helix_mean_loss
 
-    validate_initialization_settings(protocol)
     if bundle["aa_order"] != AA:
         raise ValueError("Unexpected paired-input amino-acid order")
     index = bundle["pair"]
@@ -426,10 +423,9 @@ def design_prior(driver, audit, sources, bundle: dict, protocol: dict, archive) 
     from analysis.design.constants import TOKENS
     from analysis.design.folding import prepare_folding_inputs
     from analysis.design.loop import design_binder
-    from analysis.priors import AA, validate_initialization_settings
+    from analysis.priors import AA
     from analysis.results import DesignCompletion, DesignResult, RunSpec
 
-    validate_initialization_settings(protocol)
     if protocol["aa_order"] != AA:
         raise ValueError("Unexpected prior amino-acid order")
     seed = bundle["seed"]

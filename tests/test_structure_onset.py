@@ -37,8 +37,3 @@ def test_existing_arms_keep_the_original_objective():
             )
             assert arm.schedule.base_structure_weight_at(step) == 1.0
         assert "base_structure_onset" not in arm.schedule.to_dict()
-
-
-def test_negative_base_onset_is_rejected():
-    with pytest.raises(ValueError, match="base_structure_onset"):
-        schedule.LossSchedule("bad", (schedule.Waypoint(0, {}),), base_structure_onset=-1)

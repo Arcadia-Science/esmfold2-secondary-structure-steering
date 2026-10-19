@@ -219,12 +219,8 @@ def design_binder(
     """
     # Truncate execution without compressing the annealing schedule.
     run_steps = steps if stop_after_steps is None else stop_after_steps
-    if not 1 <= run_steps <= steps:
-        raise ValueError("stop_after_steps must be between 1 and steps")
-    if snapshot_sampling_steps is not None and (
-        not log_step_structures or snapshot_sampling_steps < 2
-    ):
-        raise ValueError("snapshot_sampling_steps requires structure logging and at least 2 steps")
+    if snapshot_sampling_steps is not None and not log_step_structures:
+        raise ValueError("snapshot_sampling_steps requires structure logging")
     device = "cuda"
     if target_name in TARGET_SEQUENCES:
         if target_sequence is not None:
@@ -473,7 +469,6 @@ def design_binder(
 
     critic_results: list[dict] = []
     final_total_loss = trajectory[global_step - 1]["total_loss"]
-    assert isinstance(final_total_loss, torch.Tensor)
     for batch_idx in range(batch_size):
         best_seq = best_sequences[batch_idx]
         binder_seq = best_seq.split("|")[-1]

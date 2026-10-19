@@ -53,14 +53,6 @@ def build(target_key: str, arm: str, complexes: Path, results: Path) -> pd.DataF
     if frame.seed.duplicated().any() or sorted(observed) != sorted(frame.seed.tolist()):
         raise ValueError(f"Structures and score rows do not match: {target_key}/{arm}")
 
-    absent = [column for column in (*SCORE_COLUMNS, "seed") if column not in frame.columns]
-    if absent:
-        raise KeyError(
-            f"results table {results} is missing {absent}. Every column the "
-            f"viability rule needs is returned by analysis.modal_app.design, so "
-            f"a missing one means the deployed app predates it. Redeploy with:\n"
-            f"    modal deploy src/analysis/modal_app.py"
-        )
     scores = frame[["seed", *SCORE_COLUMNS]].rename(columns=SCORE_COLUMNS)
     measured = measured.merge(scores, on="seed", how="left")
 

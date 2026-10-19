@@ -22,8 +22,6 @@ from dataclasses import dataclass
 
 import torch
 
-from analysis.steering import TERM_SPECS, term
-
 
 @dataclass(frozen=True)
 class Waypoint:
@@ -31,18 +29,6 @@ class Waypoint:
 
     step: int
     weights: dict[str, float]
-
-    def __post_init__(self) -> None:
-        if self.step < 0:
-            raise ValueError(f"waypoint step must be >= 0, got {self.step}")
-        unknown = set(self.weights) - set(TERM_SPECS)
-        if unknown:
-            raise KeyError(
-                f"unknown steering term(s) {sorted(unknown)}; registered: {sorted(TERM_SPECS)}"
-            )
-        negative = sorted(name for name, value in self.weights.items() if value < 0)
-        if negative:
-            raise ValueError(f"steering weights must be >= 0; negative: {negative}")
 
 
 @dataclass(frozen=True)
@@ -54,10 +40,6 @@ class LossSchedule:
     base_structure_onset: int = 0
 
     def __post_init__(self) -> None:
-        if self.base_structure_onset < 0:
-            raise ValueError("base_structure_onset must be >= 0")
-        if not self.waypoints:
-            raise ValueError("a schedule needs at least one waypoint")
         steps = [waypoint.step for waypoint in self.waypoints]
         if steps != sorted(steps):
             raise ValueError(f"waypoints must be sorted by step, got {steps}")
@@ -68,8 +50,6 @@ class LossSchedule:
 
     def weights_at(self, step: int) -> dict[str, float]:
         """The weight each term carries at ``step``. Unset terms are omitted."""
-        if step < 0:
-            raise ValueError(f"step must be >= 0, got {step}")
         active: dict[str, float] = {}
         for waypoint in self.waypoints:
             if waypoint.step > step:
@@ -79,8 +59,6 @@ class LossSchedule:
 
     def base_structure_weight_at(self, step: int) -> float:
         """Gate the cookbook structural objective independently of steering."""
-        if step < 0:
-            raise ValueError(f"step must be >= 0, got {step}")
         return float(step >= self.base_structure_onset)
 
     def structural_objective(
@@ -134,9 +112,7 @@ VANILLA = LossSchedule(key="vanilla", waypoints=(Waypoint(step=0, weights={}),))
 
 def constant(key: str, term_key: str, weight: float) -> LossSchedule:
     """One term at one weight for the whole run."""
-    return LossSchedule(
-        key=key, waypoints=(Waypoint(step=0, weights={term(term_key).key: weight}),)
-    )
+    return LossSchedule(key=key, waypoints=(Waypoint(step=0, weights={term_key: weight}),))
 
 
 def released(key: str, term_key: str, weight: float, release_step: int) -> LossSchedule:
@@ -149,14 +125,11 @@ def released(key: str, term_key: str, weight: float, release_step: int) -> LossS
     back. Released at step 0 is the unsteered arm and never released is the
     constant arm, so the two ends of the scan are campaigns that already exist.
     """
-    if release_step < 1:
-        raise ValueError(f"release_step must be >= 1, got {release_step}")
-    name = term(term_key).key
     return LossSchedule(
         key=key,
         waypoints=(
-            Waypoint(step=0, weights={name: weight}),
-            Waypoint(step=release_step, weights={name: 0.0}),
+            Waypoint(step=0, weights={term_key: weight}),
+            Waypoint(step=release_step, weights={term_key: 0.0}),
         ),
     )
 
@@ -172,13 +145,10 @@ def delayed(key: str, term_key: str, weight: float, onset_step: int) -> LossSche
     onset is therefore the weight acting on a design the unsteered objective
     has already committed, rather than on an initialization.
     """
-    if onset_step < 1:
-        raise ValueError(f"onset_step must be >= 1, got {onset_step}")
-    name = term(term_key).key
     return LossSchedule(
         key=key,
         waypoints=(
             Waypoint(step=0, weights={}),
-            Waypoint(step=onset_step, weights={name: weight}),
+            Waypoint(step=onset_step, weights={term_key: weight}),
         ),
     )

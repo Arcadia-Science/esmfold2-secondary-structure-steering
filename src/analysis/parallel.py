@@ -12,11 +12,6 @@ DEFAULT_WORKERS = min(4, os.cpu_count() or 1)
 Result = TypeVar("Result")
 
 
-def validate_workers(workers: int) -> None:
-    if not isinstance(workers, int) or isinstance(workers, bool) or workers < 1:
-        raise ValueError("workers must be a positive integer")
-
-
 def starmap(
     function: Callable[..., Result], tasks: Iterable[tuple], *, workers: int = DEFAULT_WORKERS
 ) -> Iterator[Result]:
@@ -27,7 +22,6 @@ def starmap(
     ``workers=1`` runs locally. Pools are closed before returning to the caller;
     exceptions propagate rather than triggering a silent serial fallback.
     """
-    validate_workers(workers)
     if workers == 1:
         yield from itertools.starmap(function, tasks)
         return

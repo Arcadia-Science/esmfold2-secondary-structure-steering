@@ -92,14 +92,6 @@ def test_a_tensor_shorter_than_the_two_chains_is_refused() -> None:
         confidence.chain_plddt(two_chain_plddt(0.9, 0.5), TARGET_LENGTH, BINDER_LENGTH + 1)
 
 
-@pytest.mark.parametrize(
-    ("target_length", "binder_length"), [(0, BINDER_LENGTH), (TARGET_LENGTH, 0)]
-)
-def test_an_empty_chain_is_refused(target_length: int, binder_length: int) -> None:
-    with pytest.raises(ValueError, match="non-empty"):
-        confidence.chain_plddt(two_chain_plddt(0.9, 0.5), target_length, binder_length)
-
-
 def a_design(helix: float, sheet: float, iptm: float, binder_plddt: float) -> dict[str, float]:
     return {
         "helix (fraction 0-1)": helix,

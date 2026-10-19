@@ -947,7 +947,6 @@ def spawn_initialization(root: Path, experiment: str, temperature: float) -> pd.
 def collect_initialization(
     root: Path, experiment: str, temperature: float, *, force: bool = False
 ) -> None:
-    initialization.validate_experiment(experiment, temperature)
     if experiment == "full":
         arm = full_initialization_arm(temperature)
         done = collect_campaign(INITIALIZATION_TARGET, arm)
