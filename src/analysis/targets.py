@@ -456,4 +456,5 @@ def publication_campaigns() -> list[tuple[str, str]]:
     grid = {(t, a) for t in TARGET_SPECS for a in CAMPAIGN_ARMS}
     grid.update((INITIALIZATION_TARGET, a) for a in ONSET_SCAN.values())
     grid.update((INITIALIZATION_TARGET, a) for a in RELEASE_SCAN.values())
+    grid.update((INITIALIZATION_TARGET, a) for a in SHORT_TRAJECTORY_ARMS.values())
     return sorted(grid)

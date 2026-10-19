@@ -1597,7 +1597,7 @@ def matched_composition_panel(
     for x, arm in enumerate(arms):
         mean = 100 * means.loc[arm, column]
         axis.plot([x - 0.20, x + 0.20], [mean, mean], color="black", lw=2.5, zorder=3)
-        axis.text(x + 0.24, max(mean, 1.5), f"{mean:.1f}%", va="center", fontsize=11)
+        axis.text(x + 0.24, max(mean, 1.5), f"{round(mean, 10):.1f}%", va="center", fontsize=11)
     _trajectory_axis(axis, metric)
     axis.set(xticks=range(len(arms)), xticklabels=labels, xlim=(-0.4, len(arms) - 0.3))
     return fig
