@@ -42,13 +42,6 @@ POLL_SECONDS = 60
 def read_manifest(path: Path, *, key: str) -> pd.DataFrame:
     if path.is_file():
         frame = pd.read_csv(path)
-    elif key == "run" and (path.parent / "calls.json").is_file():
-        # Existing collected inputs retain their original provenance unchanged.
-        calls = json.loads((path.parent / "calls.json").read_text())
-        frame = pd.DataFrame(
-            [{"run": name, "call_id": item["call_id"]} for name, item in calls.items()],
-            columns=[key, "call_id"],
-        )
     else:
         return pd.DataFrame(columns=[key, "call_id"])
     if (

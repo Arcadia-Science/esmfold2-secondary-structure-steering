@@ -199,7 +199,6 @@ data/reference/*
 
 # Local exploratory work and scientific planning notes.
 /data/exploratory/
-/data/initialization/
 /exploratory/
 /scientific-direction.md
 /structural-analysis-plan.md

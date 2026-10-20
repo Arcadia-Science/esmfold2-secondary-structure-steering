@@ -13,14 +13,13 @@ from scratch is an explicit, separate act: see :mod:`analysis.campaign`.
 """
 
 from __future__ import annotations
-import json
 from dataclasses import dataclass
 from pathlib import Path
 
 import pandas as pd
 
-from analysis import deposit, loss_trace, paths
-from analysis.targets import ARM_SPECS, CRITIC_MODELS, TARGET_SPECS
+from analysis import deposit, paths
+from analysis.targets import ARM_SPECS, TARGET_SPECS
 
 
 @dataclass(frozen=True)
@@ -34,15 +33,10 @@ class CampaignStatus:
     has_complexes: bool
     has_trace: bool
     n_complexes: int
-    trajectory_only: bool = False
-    has_step_complexes: bool = False
-    has_complete_trajectory: bool = False
 
     @property
     def is_analysable(self) -> bool:
         """Whether model scores and coordinates are available for measurement."""
-        if self.trajectory_only:
-            return self.has_complete_trajectory and self.has_step_complexes
         return self.has_results and self.has_complexes
 
     @property
@@ -55,31 +49,6 @@ def status(target_key: str, arm: str) -> CampaignStatus:
     """Report which artifacts exist for one campaign, touching nothing."""
     complexes = paths.campaign_complexes(target_key, arm)
     n = len(list(complexes.glob("*.pdb"))) if complexes.is_dir() else 0
-    protocol_path = paths.campaign_protocol(target_key, arm)
-    protocol = json.loads(protocol_path.read_text()) if protocol_path.is_file() else {}
-    trajectory = protocol.get("output_kind") == "trajectory"
-    steps_present = trajectory and all(
-        (paths.campaign_step_complexes(target_key, arm, seed) / f"step{step:03d}.pdb").is_file()
-        for seed in range(protocol["n_seeds"])
-        for step in range(protocol["sgd_steps"])
-    )
-    complete = False
-    if (
-        trajectory
-        and paths.campaign_results(target_key, arm).is_file()
-        and paths.campaign_trace(target_key, arm).is_file()
-    ):
-        result_seeds = pd.read_parquet(paths.campaign_results(target_key, arm), columns=["seed"])
-        try:
-            loss_trace.validate_steps(
-                loss_trace.load_campaign(target_key, arm),
-                n_seeds=protocol["n_seeds"],
-                steps=protocol["sgd_steps"],
-            )
-        except ValueError:
-            pass
-        else:
-            complete = sorted(result_seeds.seed.tolist()) == list(range(protocol["n_seeds"]))
     return CampaignStatus(
         target_key=target_key,
         arm=arm,
@@ -88,9 +57,6 @@ def status(target_key: str, arm: str) -> CampaignStatus:
         has_complexes=n > 0,
         has_trace=paths.campaign_trace(target_key, arm).is_file(),
         n_complexes=n,
-        trajectory_only=trajectory,
-        has_step_complexes=steps_present,
-        has_complete_trajectory=complete,
     )
 
 
@@ -117,8 +83,6 @@ def status_table(
                     "manifest present (bool)": s.has_manifest,
                     "predicted complexes (count)": s.n_complexes,
                     "loss log present (bool)": s.has_trace,
-                    "trajectory only (bool)": s.trajectory_only,
-                    "step complexes complete (bool)": s.has_step_complexes,
                     "analysable (bool)": s.is_analysable,
                 }
             )
@@ -172,24 +136,6 @@ def load_all(
             "Supply the preserved model inputs; see analysis.deposit for archive availability."
         )
     return pd.concat(frames, ignore_index=True)
-
-
-def critic_scores(target_key: str, arm: str) -> pd.DataFrame:
-    """One row per design and critic, using the campaign analysis units."""
-    rows = []
-    for record in load_campaign(target_key, arm).to_dict("records"):
-        for critic in CRITIC_MODELS:
-            rows.append(
-                {
-                    "target": target_key,
-                    "arm": arm,
-                    "seed": record["seed"],
-                    "critic": critic,
-                    "iptm (0-1)": record["critic_iptm_by_model"][critic],
-                    "binder pLDDT (0-100)": record["critic_plddt_binder_by_model"][critic],
-                }
-            )
-    return pd.DataFrame(rows)
 
 
 def derived(name: str) -> Path:

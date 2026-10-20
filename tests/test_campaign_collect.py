@@ -116,12 +116,10 @@ def test_packaging_round_trips_through_extraction(tmp_path) -> None:
         assert sorted(archive.namelist()) == ["nested/table.parquet", "top.json"]
 
 
-@pytest.mark.parametrize(
-    ("key", "identifiers"), [("seed", [0, 1, 2]), ("run", ["input00", "input01", "controls"])]
-)
-def test_submission_resumes_after_interruption_without_duplicate_calls(tmp_path, key, identifiers):
+def test_submission_resumes_after_interruption_without_duplicate_calls(tmp_path):
     from types import SimpleNamespace
 
+    key, identifiers = "seed", [0, 1, 2]
     path = tmp_path / "manifest.csv"
     jobs = [{key: value} for value in identifiers]
     submitted = []

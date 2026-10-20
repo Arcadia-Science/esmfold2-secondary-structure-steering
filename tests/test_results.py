@@ -1,4 +1,4 @@
-"""Shared result models preserve worker formats and validate archive metadata."""
+"""Result models preserve worker formats and campaign metadata."""
 
 import sys
 from types import ModuleType, SimpleNamespace
@@ -17,7 +17,6 @@ from analysis.targets import CRITIC_MODELS, PRIMARY_CRITIC, arm
 @pytest.fixture
 def archived_result():
     return SimpleNamespace(
-        protocol={"target": "pdl1_igv", "arm": "vanilla", "steps": 3},
         critics=[
             {
                 "critic_name": name,
@@ -89,7 +88,7 @@ def test_worker_preserves_payload_and_table_schema(archived_result, monkeypatch,
 
 
 def test_critic_records_must_agree_on_sequence_and_have_unique_names(archived_result):
-    run = RunSpec.from_protocol(archived_result.protocol, seed=0)
+    run = RunSpec(target="pdl1_igv", arm="vanilla", seed=0, steps=3)
     critics = archived_result.critics
     with pytest.raises(ValueError, match="duplicate critics"):
         DesignResult.from_critics(run, [*critics, critics[0]])
@@ -110,8 +109,8 @@ def test_optional_critic_without_iptm_keeps_its_other_scores(archived_result):
 
 
 def test_incomplete_trace_and_wrong_manifest_seed_are_rejected(archived_result):
-    run = RunSpec.from_protocol(archived_result.protocol, seed=0)
-    result = DesignResult.from_critics(run, archived_result.critics, selected_step=2)
+    run = RunSpec(target="pdl1_igv", arm="vanilla", seed=0, steps=3)
+    result = DesignResult.from_critics(run, archived_result.critics)
     with pytest.raises(ValueError, match="Expected 3 trace rows, observed 2"):
         CampaignOutput.from_design(result, [{}, {}], archived_result.pdb)
     with pytest.raises(ValueError, match="expected 1, observed 0"):

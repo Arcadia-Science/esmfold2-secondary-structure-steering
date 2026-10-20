@@ -13,16 +13,13 @@ private name, and compares it against the ported modules two ways:
    executed in both modules on the same fixed inputs and compared for exact
    equality.
 
-Two definitions are deliberately not identical, and are therefore absent from
-``PORTED_DEFINITIONS``. ``design_binder`` is where this publication's work
-lives: the steering terms, the per-step binding readout, the loss log, the
+``design_binder`` is deliberately absent from ``PORTED_DEFINITIONS``. It is
+where this publication's work lives: the steering terms, the per-step binding
+readout, the loss log, the
 sampling-step budget and the per-step structure dump. It has diverged far
 enough from the cookbook that pinning it against upstream stopped being useful,
 so it is not checked here. What it does is covered by the tests of the pieces it
 calls, and by the campaign artifacts it produces.
-``fold_and_get_distogram`` now accepts reusable prepared inputs and ordinary
-discrete conditioning for exploratory studies. Its default conditioning and
-optional paths are checked in ``test_folding_inputs.py``.
 
 Functions that cannot execute here are marked xfail with the reason, never
 skipped silently. Two things are missing in a CPU environment: a CUDA device
@@ -85,6 +82,7 @@ PORTED_DEFINITIONS = {
     "_resize_tensor": "analysis.design.folding",
     "_ensure_ccd_loaded": "analysis.design.folding",
     "prepare_esmfold2_tensors": "analysis.design.folding",
+    "fold_and_get_distogram": "analysis.design.folding",
     "_asym_id_to_chain_label": "analysis.design.structure",
     "to_atom_array": "analysis.design.structure",
     "build_complex": "analysis.design.structure",

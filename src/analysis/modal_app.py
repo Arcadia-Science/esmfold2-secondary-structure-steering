@@ -38,10 +38,8 @@ only ``modal`` installed, without ``esm`` or the Biohub ``transformers`` fork.
 """
 
 import gzip
-import hashlib
 import json
 import os
-from pathlib import Path
 from typing import Any
 
 import modal
@@ -155,14 +153,11 @@ def get_base_image():
 
 image = get_base_image().pip_install("pandas", "pydssp").add_local_python_source("analysis")
 
-study = modal.Volume.from_name(f"{APP_NAME}-runs", create_if_missing=True)
-
 app = modal.App(
     name=APP_NAME,
     image=image,
     volumes={
         "/models": modal.Volume.from_name("esmfold2-models", create_if_missing=True),
-        "/study": study,
     },
 )
 
@@ -214,7 +209,6 @@ class ESMFold2DesignModal:
     """
 
     use_scaling_critics: bool = modal.parameter(default=False)
-    load_critics: bool = modal.parameter(default=True)
 
     @modal.enter()
     def load(self) -> None:
@@ -223,14 +217,7 @@ class ESMFold2DesignModal:
         pin_esmc_revision(ESMC_REVISION)
 
         self.driver = ESMFold2Design()
-        if not self.load_critics:
-            self.driver.hero_critic_hf_paths = []
         self.driver.load(self.use_scaling_critics)
-        self.sources, self.audit = runtime_provenance()
-        self.audit.update(
-            models={n: m.config.to_dict() for n, m in self.driver.inversion_models.items()},
-            torch_compile=True,
-        )
 
     @modal.method()
     def design(
@@ -355,31 +342,3 @@ def main(
     print(f"critic_plddt_binder={result['critic_plddt_binder']}")
     print(f"step_trace_rows={len(result['step_trace'])}")
     print(f"pdb_chars={len(result['complex_pdb'])}")
-
-
-def runtime_provenance() -> tuple[dict, dict]:
-    """Record model implementation and environment once for each worker container."""
-    import importlib.metadata
-    import inspect
-
-    import torch
-    from transformers.models.esmfold2 import modeling_esmfold2_common as common
-    from transformers.models.esmfold2 import modeling_esmfold2_experimental as experimental
-
-    sources = {
-        Path(inspect.getfile(m)).name: Path(inspect.getfile(m)).read_bytes()
-        for m in (common, experimental)
-    }
-    audit = {
-        "esmc_revision": ESMC_REVISION,
-        "packages": {
-            n: importlib.metadata.version(n) for n in ("torch", "transformers", "esm", "pydssp")
-        },
-        "gpu": torch.cuda.get_device_name(),
-        "source_sha256": {n: hashlib.sha256(v).hexdigest() for n, v in sources.items()},
-    }
-    for name in ("torch", "transformers", "esm"):
-        direct = importlib.metadata.distribution(name).read_text("direct_url.json")
-        if direct:
-            audit[name + "_direct_url"] = json.loads(direct)
-    return sources, audit

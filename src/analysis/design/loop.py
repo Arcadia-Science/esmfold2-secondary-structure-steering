@@ -68,7 +68,6 @@ import math
 import os
 import random
 import time
-from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -175,10 +174,6 @@ def design_binder(
     log_step_structures: bool = False,
     stop_after_steps: int | None = None,
     snapshot_sampling_steps: int | None = None,
-    initial_logits: torch.Tensor | None = None,
-    initial_prepared: dict | None = None,
-    step_observer: Callable[[dict], None] | None = None,
-    arm: str | None = None,
 ) -> tuple[
     list[str],
     Trajectory,
@@ -204,14 +199,6 @@ def design_binder(
     defaults to no steering at all. ``trace_path`` is where the per-step loss
     log is appended as JSON lines; the log is returned either way, so a path is
     only needed when a run has to survive its own process.
-    ``arm`` labels the experimental condition independently of its objective;
-    when omitted, log rows use the schedule's key.
-
-    Exploratory callers may supply mutable ``initial_logits`` and matching
-    discrete ``initial_prepared`` features. ``step_observer`` receives detached
-    CPU sequence states and discrete features after each update, including both
-    the pre-update logits used for prediction and the post-update logits.
-    These options are off by default and do not change the return format.
 
     Only single binder and target chains are supported by default. To support
     the multi-chain case, remove the two ``"|" not in`` asserts below and check
@@ -255,18 +242,6 @@ def design_binder(
         logits = build_initial_soft_sequence_logits(binder_sequence, batch_size=batch_size)
         gradient_mask = build_gradient_mask(binder_sequence, batch_size=batch_size)
 
-    if initial_logits is not None:
-        if binder_sequence != "#" * binder_length:
-            raise ValueError("Custom logits require every binder position to be mutable")
-        if initial_logits.shape != logits.shape or not torch.isfinite(initial_logits).all():
-            raise ValueError("Custom logits must be finite and match the binder shape")
-        from analysis.design.constants import CYS_IDX
-
-        if not (initial_logits[..., CYS_IDX] <= -1e5).all():
-            raise ValueError("Custom logits must retain cysteine exclusion")
-        logits = initial_logits.detach().to(device=device, dtype=logits.dtype).clone()
-        logits.requires_grad_(True)
-
     trajectory: Trajectory = {}
     trace: list[loss_trace.StepRecord] = []
     step_structures: list[str] = []
@@ -290,7 +265,6 @@ def design_binder(
         inversion_name = list(inversion_models)[replicate_choice]
         inversion_model = inversion_models[inversion_name]
         design = F.softmax(logits / temperature, dim=-1)
-        pre_update_logits = logits.detach().cpu().clone() if step_observer else None
 
         fold_result = fold_and_get_distogram(
             inversion_model,
@@ -303,7 +277,6 @@ def design_binder(
             ),
             calculate_confidence=calculate_confidence,
             seed=seed + global_step,
-            **({"prepared": initial_prepared} if global_step == 0 and initial_prepared else {}),
         )
         sequences: list[str] = fold_result["seq_list"]
         losses = compute_structure_losses(fold_result["distogram_logits"], binder_length)
@@ -375,7 +348,7 @@ def design_binder(
         )
         record = loss_trace.StepRecord(
             target=target_name,
-            arm=schedule.key if arm is None else arm,
+            arm=schedule.key,
             seed=seed,
             step=step,
             steps=steps,
@@ -391,27 +364,6 @@ def design_binder(
             weights=weights,
         )
         trace.append(record)
-        if step_observer is not None:
-            step_observer(
-                {
-                    "step": step,
-                    "seed": seed + step,
-                    "temperature": temperature,
-                    "inversion_model": inversion_name,
-                    "logits": pre_update_logits,
-                    "post_update_logits": logits.detach().cpu().clone(),
-                    "probabilities": design.detach().cpu().clone(),
-                    "prepared": {
-                        "inputs": {
-                            k: v.detach().cpu().clone()
-                            for k, v in fold_result["inputs"].items()
-                            if k != "res_type_soft"
-                        },
-                        "inputs_list": [],
-                        "seq_list": list(sequences),
-                    },
-                }
-            )
         if trace_path is not None:
             loss_trace.append(record, trace_path)
         if log_step_structures:

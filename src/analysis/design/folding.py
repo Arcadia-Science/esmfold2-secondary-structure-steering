@@ -1,8 +1,7 @@
 """Input preparation and the ESMFold2 forward pass that yields the distogram.
 
-Adapted from ``cookbook/tutorials/binder_design.py`` at upstream commit
-``ba4d712``, lines 479-596. Optional prepared inputs and discrete conditioning
-support exploratory forward comparisons; defaults preserve the design path.
+Verbatim from ``cookbook/tutorials/binder_design.py`` at upstream commit
+``ba4d712``, lines 479-596.
 
 ``fold_and_get_distogram`` takes the argmax of the padded soft design to get the
 designed sequence string, which is the one upstream inline comment dropped from
@@ -80,17 +79,17 @@ def prepare_esmfold2_tensors(
     return features
 
 
-def prepare_folding_inputs(
+def fold_and_get_distogram(
+    model: ESMFold2ExperimentalModel,
     target_seq: str,
+    target_one_hot: torch.Tensor,
     design: torch.Tensor,
+    num_loops: int = 0,
+    num_sampling_steps: int = 1,
+    calculate_confidence: bool = False,
     seed: int | None = None,
 ) -> dict:
-    """Prepare reusable discrete features from the design's argmax sequence.
-
-    This optional entry point lets exploratory comparisons hold actual atom
-    features fixed. The ordinary design path still prepares them on each call.
-    ``seed`` controls preparation only and defaults to the original behavior.
-    """
+    """Prepare inputs, run model forward, return distogram_logits + raw output."""
     padding = (2, 11)
     padded_design = F.pad(design, padding, mode="constant", value=0)
 
@@ -110,49 +109,14 @@ def prepare_folding_inputs(
                 for sequence, chain_id in sequences.items()
             ]
         )
-        inputs_list.append(prepare_esmfold2_tensors(inputs_raw, max_atoms=max_atoms, seed=seed))
+        inputs_list.append(prepare_esmfold2_tensors(inputs_raw, max_atoms=max_atoms))
 
     inputs = {
         key: torch.stack([inp[key] for inp in inputs_list], dim=0).cuda() for key in inputs_list[0]
     }
-    return {"inputs": inputs, "inputs_list": inputs_list, "seq_list": seq_list}
-
-
-def fold_and_get_distogram(
-    model: ESMFold2ExperimentalModel,
-    target_seq: str,
-    target_one_hot: torch.Tensor,
-    design: torch.Tensor,
-    num_loops: int = 0,
-    num_sampling_steps: int = 1,
-    calculate_confidence: bool = False,
-    seed: int | None = None,
-    *,
-    prepared: dict | None = None,
-    use_soft_sequence: bool = True,
-) -> dict:
-    """Fold a design, optionally reusing features or omitting soft conditioning.
-
-    Defaults preserve the design algorithm. ``prepared`` must describe the
-    same target and argmax binder sequence. ``use_soft_sequence=False`` uses
-    ordinary discrete conditioning while retaining the other forward options.
-    """
-    if prepared is None:
-        prepared = prepare_folding_inputs(target_seq, design)
-    else:
-        expected = [
-            target_seq + "|" + "".join(PROTEIN_3TO1[TOKENS[int(i) + 2]] for i in row)
-            for row in design.argmax(dim=-1).tolist()
-        ]
-        if prepared["seq_list"] != expected:
-            raise ValueError("Prepared features do not match the target and argmax design")
-    inputs = dict(prepared["inputs"])
-    if "res_type_soft" in inputs:
-        raise ValueError("Prepared discrete features must not contain res_type_soft")
-    if use_soft_sequence:
-        inputs["res_type_soft"] = torch.cat(
-            (target_one_hot.repeat(design.size(0), 1, 1), F.pad(design, (2, 11))), dim=1
-        )
+    inputs["res_type_soft"] = torch.cat(
+        (target_one_hot.repeat(design.size(0), 1, 1), padded_design), dim=1
+    )
 
     with seed_context(seed):
         output = model(
@@ -167,9 +131,9 @@ def fold_and_get_distogram(
     result: dict = {
         "distogram_logits": output["distogram_logits"],
         "inputs": inputs,
-        "inputs_list": prepared["inputs_list"],
+        "inputs_list": inputs_list,
         "output": output,
-        "seq_list": prepared["seq_list"],
+        "seq_list": seq_list,
     }
     if calculate_confidence:
         result.update(

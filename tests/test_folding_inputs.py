@@ -19,8 +19,7 @@ def folding(monkeypatch):
     functions = [
         node
         for node in tree.body
-        if isinstance(node, ast.FunctionDef)
-        and node.name in ("prepare_folding_inputs", "fold_and_get_distogram")
+        if isinstance(node, ast.FunctionDef) and node.name == "fold_and_get_distogram"
     ]
     namespace = {
         "torch": torch,
@@ -58,29 +57,6 @@ def test_default_preserves_soft_conditioning_and_gradients(folding):
     assert torch.equal(received["res_type_soft"], torch.cat((target, F.pad(design, (2, 11))), 1))
     assert received["num_loops"] == 0 and received["num_sampling_steps"] == 1
     assert received["seed"] == 12 and received["calculate_confidence"] is False
-    assert folding.preparation_calls[0][1]["seed"] is None
+    assert folding.preparation_calls[0][1].get("seed") is None
     result["distogram_logits"].backward()
     assert logits.grad is not None and logits.grad.abs().sum() > 0
-
-
-def test_reused_features_and_discrete_path(folding):
-    design = F.one_hot(torch.tensor([[0, 1, 2, 3]]), 20).float()
-    target = F.one_hot(torch.tensor([[2]]), 33).float()
-    prepared = folding.prepare_folding_inputs("A", design, seed=88)
-    calls = []
-
-    def model(**kwargs):
-        calls.append(kwargs)
-        return {"distogram_logits": torch.zeros(1)}
-
-    for use_soft in (True, False):
-        folding.fold_and_get_distogram(
-            model, "A", target, design, prepared=prepared, use_soft_sequence=use_soft
-        )
-    assert len(folding.preparation_calls) == 1
-    assert folding.preparation_calls[0][1]["seed"] == 88
-    assert "res_type_soft" in calls[0] and "res_type_soft" not in calls[1]
-    assert "res_type_soft" not in prepared["inputs"]
-    assert calls[0]["feature"] is calls[1]["feature"]
-    with pytest.raises(ValueError, match="do not match"):
-        folding.fold_and_get_distogram(model, "C", target, design, prepared=prepared)

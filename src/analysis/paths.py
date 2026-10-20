@@ -45,13 +45,8 @@ def campaign_trace(target_key: str, arm: str) -> Path:
 
 
 def campaign_protocol(target_key: str, arm: str) -> Path:
-    """Recorded settings for a completed-design or trajectory campaign."""
+    """Recorded settings for a design campaign."""
     return campaign_dir(target_key, arm) / "protocol.json"
-
-
-def campaign_run(target_key: str, arm: str, seed: int) -> Path:
-    """Original inputs, saved states and provenance for one design."""
-    return campaign_dir(target_key, arm) / "runs" / f"seed{seed:02d}"
 
 
 def campaign_complexes(target_key: str, arm: str) -> Path:

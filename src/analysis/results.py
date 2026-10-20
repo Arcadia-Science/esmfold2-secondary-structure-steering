@@ -1,12 +1,12 @@
 """Shared design records and their JSON/Parquet boundary formats.
 
-Workers and archive readers construct the same typed result. CampaignOutput
-holds its serialized row separately from the trace and structure artifacts.
+Workers construct typed results. CampaignOutput holds each serialized row
+separately from the trace and structure artifacts.
 """
 
 from __future__ import annotations
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, fields
+from dataclasses import dataclass
 from typing import Any
 
 from analysis.confidence import ChainPlddt
@@ -21,27 +21,6 @@ class RunSpec:
     seed: int
     steps: int
     primary_critic: str = PRIMARY_CRITIC
-
-    @classmethod
-    def from_protocol(cls, protocol: Mapping, *, seed: int) -> RunSpec:
-        original = protocol.get("source_protocol", protocol)
-        return cls(
-            target=protocol["target"],
-            arm=protocol["arm"],
-            seed=seed,
-            steps=protocol["sgd_steps"] if "sgd_steps" in protocol else original["steps"],
-            primary_critic=original.get("primary_critic", PRIMARY_CRITIC),
-        )
-
-    def validate_against(self, expected: RunSpec) -> None:
-        differences = [
-            f"{field.name}: expected {getattr(expected, field.name)!r}, "
-            f"observed {getattr(self, field.name)!r}"
-            for field in fields(self)
-            if getattr(self, field.name) != getattr(expected, field.name)
-        ]
-        if differences:
-            raise ValueError("Run specification mismatch: " + "; ".join(differences))
 
     def row(self) -> dict[str, object]:
         row = {
@@ -65,7 +44,7 @@ class CriticResult:
 
     @classmethod
     def from_record(cls, record: Mapping[str, Any]) -> CriticResult:
-        """Accept the same critic record from the model or its preserved JSON."""
+        """Read a critic evaluation from the design worker."""
         return cls(
             name=record["critic_name"],
             designed_sequence=record["designed_sequence"],
@@ -84,7 +63,6 @@ class CriticResult:
 class DesignResult:
     run: RunSpec
     critics: tuple[CriticResult, ...]
-    selected_step: int | None = None
     binder_name: str | None = None
 
     def __post_init__(self) -> None:
@@ -102,13 +80,11 @@ class DesignResult:
         run: RunSpec,
         records: Sequence[Mapping],
         *,
-        selected_step: int | None = None,
         binder_name: str | None = None,
     ) -> DesignResult:
         return cls(
             run=run,
             critics=tuple(CriticResult.from_record(r) for r in records),
-            selected_step=selected_step,
             binder_name=binder_name,
         )
 
@@ -128,15 +104,8 @@ class DesignResult:
     def binder_sequence(self) -> str:
         return self.designed_sequence.split("|")[1]
 
-    def validate_critics(self, expected: Sequence[str]) -> None:
-        """Require a confidence evaluation from every expected campaign critic."""
-        if {c.name for c in self.critics} != set(expected):
-            raise ValueError("Missing or unexpected critics")
-        if any(c.iptm is None for c in self.critics):
-            raise ValueError("Expected ipTM from every campaign critic")
-
     def row(self) -> dict[str, object]:
-        """The single table schema used by both workers and archive collection."""
+        """Per-design scores and metadata for the campaign table."""
         primary = self.primary
         row = {
             **self.run.row(),
@@ -158,8 +127,6 @@ class DesignResult:
             },
             "design_steps_recorded": self.run.steps,
         }
-        if self.selected_step is not None:
-            row["selected_step"] = self.selected_step
         if self.binder_name is not None:
             row["binder_name"] = self.binder_name
         return row

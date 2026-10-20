@@ -19,7 +19,6 @@ import biotite.structure as struc
 import biotite.structure.io.pdbx as pdbx
 import numpy as np
 import pydssp
-from biotite.sequence import ProteinSequence
 
 BINDER_CHAIN = "B"
 MIN_RESIDUES = 8
@@ -99,28 +98,6 @@ def assign(backbone: Backbone) -> np.ndarray:
     """Per-residue three-state labels: ``H``, ``E`` or ``-``."""
     donor = np.array([0.0 if name == "PRO" else 1.0 for name in backbone.res_names], dtype=float)
     return np.asarray(pydssp.assign(backbone.coords, donor_mask=donor, out_type="c3"))
-
-
-def checked_backbone(path: Path, sequence: str, chain_id: str = BINDER_CHAIN) -> Backbone:
-    """Read a predicted backbone and verify its identity, order and coordinates."""
-    backbone = backbone_residues(_chain(path, chain_id, None))
-    observed = "".join(ProteinSequence.convert_letter_3to1(n) for n in backbone.res_names)
-    if observed != sequence or not np.isfinite(backbone.coords).all():
-        raise ValueError(f"Invalid coordinates or sequence mismatch: {path}")
-    if not (np.diff(backbone.res_ids) == 1).all():
-        raise ValueError(f"Noncontiguous backbone: {path}")
-    return backbone
-
-
-def geometry_pass(backbone: Backbone) -> bool:
-    """Flag implausible adjacent CA distances or N–CA bond lengths."""
-    adjacent = np.linalg.norm(np.diff(backbone.coords[:, 1], axis=0), axis=-1)
-    nca = np.linalg.norm(backbone.coords[:, 0] - backbone.coords[:, 1], axis=-1)
-    return bool(
-        3 < np.median(adjacent) < 5
-        and 1 < np.median(nca) < 2
-        and ((adjacent > 3) & (adjacent < 5)).mean() > 0.9
-    )
 
 
 def composition(backbone: Backbone) -> Composition:
