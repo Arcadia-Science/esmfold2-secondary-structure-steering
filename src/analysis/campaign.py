@@ -412,7 +412,7 @@ def _full_design_result(
         or not trace["base_structure_weight (dimensionless)"].eq(1).all()
     ):
         raise ValueError(f"Unexpected objective or run identity: {source}")
-    live_trace = loss_trace.load(source / "step_trace.jsonl")
+    live_trace = loss_trace.load(source / "step_trace.jsonl").fillna(np.nan)
     pd.testing.assert_frame_equal(trace, live_trace, check_dtype=False, check_like=True)
 
     baseline_path = paths.campaign_trace(target, "vanilla")

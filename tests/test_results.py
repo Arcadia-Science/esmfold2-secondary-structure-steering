@@ -41,7 +41,7 @@ def archived_result(full_design_archive):
 def test_worker_preserves_payload_and_table_schema(archived_result, monkeypatch, tmp_path):
     # Exercise the actual Modal method without loading esm or launching a GPU.
     design = ModuleType("analysis.design")
-    design.loop = SimpleNamespace(SAMPLING_STEPS=1)
+    design.loop = SimpleNamespace(SAMPLING_STEPS=1, CONFIDENCE_SAMPLING_STEPS=50)
     monkeypatch.setitem(sys.modules, "analysis.design", design)
     records = [
         {**record, "complex": SimpleNamespace(to_pdb_string=lambda: archived_result.pdb)}

@@ -193,6 +193,7 @@ def test_partial_full_collection_resumes_from_local_runs(full_campaign, monkeypa
         ("confidence", "Expected ipTM from every campaign critic"),
         ("selected", "Critic sequence differs"),
         ("provenance", "Incomplete full design"),
+        ("live_trace", "weight helix_mean"),
     ],
 )
 def test_invalid_full_results_are_rejected_without_relabeling(full_campaign, change, message):
@@ -207,6 +208,10 @@ def test_invalid_full_results_are_rejected_without_relabeling(full_campaign, cha
         }[change]
         trace.loc[0, column] = value
         files["step_trace.csv"] = trace.to_csv(index=False).encode()
+        files["step_trace.jsonl"] = trace.to_json(orient="records", lines=True).encode()
+    elif change == "live_trace":
+        trace = pd.read_json(io.BytesIO(files["step_trace.jsonl"]), lines=True)
+        trace["weight helix_mean (dimensionless)"] = 0.5
         files["step_trace.jsonl"] = trace.to_json(orient="records", lines=True).encode()
     elif change in {"critic", "selected", "confidence"}:
         critics = json.loads(files["critics.json"])
@@ -224,7 +229,7 @@ def test_invalid_full_results_are_rejected_without_relabeling(full_campaign, cha
         for name, contents in files.items():
             archive.writestr(name, contents)
     full_campaign.payloads[0] = payload.getvalue()
-    with pytest.raises((ValueError, FileNotFoundError), match=message):
+    with pytest.raises((ValueError, FileNotFoundError, AssertionError), match=message):
         campaign.collect_campaign("pdl1_igv", full_campaign.arm)
     assert not paths.campaign_results("pdl1_igv", full_campaign.arm).exists()
     assert not paths.campaign_run("pdl1_igv", full_campaign.arm, 0).exists()

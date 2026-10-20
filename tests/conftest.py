@@ -116,6 +116,7 @@ def full_design_archive():
                 "binder length (residues)": len(sequence),
                 "steering_loss (dimensionless)": 0.0,
                 "base_structure_weight (dimensionless)": 1.0,
+                "weight helix_mean (dimensionless)": None,
                 "inversion model": "model1",
                 "temperature (0-1)": 0.999,
                 "sequence entropy (bits)": 4.0,
