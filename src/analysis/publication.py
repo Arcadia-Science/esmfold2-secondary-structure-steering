@@ -51,62 +51,6 @@ def describe(frame: pd.DataFrame) -> dict:
     }
 
 
-def short_initialization_report() -> dict:
-    """Check the short-trajectory claims using only their saved campaigns."""
-    short = pd.concat(
-        [
-            composition.measure_steps(targets.INITIALIZATION_TARGET, arm)
-            for arm in targets.SHORT_TRAJECTORY_ARMS.values()
-        ],
-        ignore_index=True,
-    )
-    loss_trace.validate_matching(short)
-    # Match the notebook: exclude failed geometry only from coordinate readouts.
-    short.loc[~short["geometry pass (bool)"], [HELIX, SHEET, "coil (fraction 0-1)"]] = np.nan
-    final_step = targets.INITIALIZATION_SPECS["short"]["updates"] - 1
-    return {
-        f"short_step{final_step}_means": short[short[STEP] == final_step]
-        .groupby("arm")[[HELIX, SHEET, PROXY, "sequence entropy (bits)"]]
-        .mean()
-        .to_dict(orient="index"),
-    }
-
-
-def full_initialization_report(arms: list[str] | None = None) -> dict:
-    """Check the long-run comparison independently of the short and softness runs.
-
-    Notebook analysis can use these same campaign readers directly, keeping
-    the choice of arms, aggregations and comparisons visible in its cells.
-    """
-    if arms is None:
-        arms = [*targets.INITIALIZATION_BASELINES, *targets.FULL_INITIALIZATION_ARMS.values()]
-    designs, traces = {}, []
-    for arm in arms:
-        designs[arm] = checked_composition(targets.INITIALIZATION_TARGET, arm)
-        trace = loss_trace.load_campaign(targets.INITIALIZATION_TARGET, arm)
-        loss_trace.validate_steps(trace, n_seeds=targets.N_SEEDS, steps=targets.SGD_STEPS)
-        traces.append(trace)
-    lengths = pd.concat(designs.values()).pivot(
-        index="seed", columns="arm", values="binder length (residues)"
-    )
-    if not lengths.nunique(axis=1).eq(1).all():
-        raise ValueError("Unmatched binder lengths across full initialization arms")
-
-    outcomes = {}
-    for arm, frame in designs.items():
-        outcomes[arm] = describe(frame)
-        outcomes[arm]["mean"].update(frame[[IPTM, PLDDT]].mean().to_dict())
-    trace = pd.concat(traces, ignore_index=True)
-    first_below = trace[trace["sequence entropy (bits)"] < 2].groupby(["arm", "seed"])[STEP].min()
-    medians = first_below.groupby("arm").median()
-    return {
-        "full_optimization": outcomes,
-        "median_first_step_below_2_bits": {
-            arm: float(medians[arm]) if arm in medians.index else None for arm in arms
-        },
-    }
-
-
 def report() -> dict:
     """Summaries for the registered main grid and both PD-L1 schedule scans."""
     arms = list(targets.CAMPAIGN_ARMS)
@@ -173,7 +117,6 @@ def report() -> dict:
         if delta.isna().any():
             raise ValueError("Missing baseline step in onset comparison")
         result["pre_onset_maximum_absolute_proxy_difference"][step] = float(delta.abs().max())
-    result["initialization"] = short_initialization_report()
     return result
 
 

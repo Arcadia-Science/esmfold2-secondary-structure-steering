@@ -1,10 +1,6 @@
 """Shared result models preserve worker formats and validate archive metadata."""
 
-import io
-import json
 import sys
-import zipfile
-from dataclasses import replace
 from types import ModuleType, SimpleNamespace
 
 import pandas as pd
@@ -12,7 +8,6 @@ import pytest
 from analysis import modal_app
 from analysis.results import (
     CampaignOutput,
-    DesignCompletion,
     DesignResult,
     RunSpec,
 )
@@ -20,22 +15,24 @@ from analysis.targets import CRITIC_MODELS, PRIMARY_CRITIC, arm
 
 
 @pytest.fixture
-def archived_result(full_design_archive):
-    protocol = {
-        "target": "pdl1_igv",
-        "target_sequence": "AAA",
-        "arm": "init_sheet_t2",
-        "steps": 3,
-        "initialization_temperature": 2.0,
-        "probability_margin": 0.001,
-    }
-    with zipfile.ZipFile(io.BytesIO(full_design_archive(protocol))) as archive:
-        return SimpleNamespace(
-            protocol=protocol,
-            critics=json.loads(archive.read("critics.json")),
-            completion=json.loads(archive.read("complete.json")),
-            pdb=archive.read(f"{PRIMARY_CRITIC}.pdb").decode(),
-        )
+def archived_result():
+    return SimpleNamespace(
+        protocol={"target": "pdl1_igv", "arm": "vanilla", "steps": 3},
+        critics=[
+            {
+                "critic_name": name,
+                "designed_sequence": "AAA|AI",
+                "iptm": 0.9,
+                "plddt_binder": 85.0,
+                "plddt_target": 92.0,
+                "plddt_complex": 89.0,
+                "distogram_iptm_proxy": 0.8,
+                "final_loss": 1.2,
+            }
+            for name in CRITIC_MODELS
+        ],
+        pdb="MODEL\nENDMDL\n",
+    )
 
 
 def test_worker_preserves_payload_and_table_schema(archived_result, monkeypatch, tmp_path):
@@ -90,73 +87,6 @@ def test_worker_preserves_payload_and_table_schema(archived_result, monkeypatch,
     pd.DataFrame([collected.row]).to_parquet(path, index=False)
     assert pd.read_parquet(path).iloc[0].to_dict() == expected
 
-    # The archive path adds initialization metadata to the same result schema.
-    run = RunSpec.from_protocol(archived_result.protocol, seed=0)
-    initialized = DesignResult.from_critics(run, archived_result.critics, selected_step=2)
-    expected.pop("binder_name")
-    expected.update(
-        arm="init_sheet_t2",
-        arm_label="Sheet prior T=2",
-        initialization_prior="sheet",
-        initialization_temperature=2.0,
-        probability_margin=0.001,
-        selected_step=2,
-    )
-    assert initialized.row() == expected
-
-
-def test_completion_keeps_existing_disk_format(archived_result):
-    run = RunSpec.from_protocol(archived_result.protocol, seed=0)
-    result = DesignResult.from_critics(run, archived_result.critics, selected_step=2)
-    written = DesignCompletion.from_result(result, initial_sequence="AI")
-    assert written.to_record() == archived_result.completion
-    read = DesignCompletion.from_record(written.to_record(), target=run.target, prior="sheet")
-    assert read == written
-    read.validate_against(result)
-
-
-@pytest.mark.parametrize(
-    "field, observed, message",
-    [
-        ("seed", 4, "seed: expected 0, observed 4"),
-        ("arm", "vanilla", "arm: expected 'init_sheet_t2', observed 'vanilla'"),
-        ("steps", 150, "steps: expected 3, observed 150"),
-        ("initialization_temperature", 4.0, "temperature=4.0"),
-        ("probability_margin", 0.01, "probability_margin=0.01"),
-        ("primary_critic", "another-critic", "observed 'another-critic'"),
-    ],
-)
-def test_completion_names_mismatched_settings(archived_result, field, observed, message):
-    expected = RunSpec.from_protocol(archived_result.protocol, seed=0)
-    record = {**archived_result.completion, field: observed}
-    completion = DesignCompletion.from_record(record, target=expected.target, prior="sheet")
-    with pytest.raises(ValueError, match=message):
-        completion.run.validate_against(expected)
-
-
-def test_completion_length_matches_sequence(archived_result):
-    with pytest.raises(ValueError, match="Completion binder length differs from its sequence"):
-        DesignCompletion.from_record(
-            {**archived_result.completion, "binder_length": 99}, target="pdl1_igv", prior="sheet"
-        )
-
-
-@pytest.mark.parametrize(
-    "field, value, message",
-    [
-        ("binder_sequence", "II", "selected sequence"),
-        ("selected_step", 1, "selected sequence"),
-        ("iptm", 0.8, "primary critic"),
-        ("binder_plddt", 50.0, "primary critic"),
-    ],
-)
-def test_completion_must_match_selected_result(archived_result, field, value, message):
-    run = RunSpec.from_protocol(archived_result.protocol, seed=0)
-    result = DesignResult.from_critics(run, archived_result.critics, selected_step=2)
-    completion = DesignCompletion.from_result(result, initial_sequence="AI")
-    with pytest.raises(ValueError, match=message):
-        replace(completion, **{field: value}).validate_against(result)
-
 
 def test_critic_records_must_agree_on_sequence_and_have_unique_names(archived_result):
     run = RunSpec.from_protocol(archived_result.protocol, seed=0)
@@ -186,3 +116,33 @@ def test_incomplete_trace_and_wrong_manifest_seed_are_rejected(archived_result):
         CampaignOutput.from_design(result, [{}, {}], archived_result.pdb)
     with pytest.raises(ValueError, match="expected 1, observed 0"):
         CampaignOutput.from_payload({"seed": 0, "step_trace": []}, seed=1)
+
+
+@pytest.mark.parametrize("sampling_steps,expected", [(0, (1, 50)), (1, (1, 1)), (7, (7, 7))])
+def test_shared_worker_preserves_default_solver_split_and_explicit_overrides(
+    monkeypatch, sampling_steps, expected
+):
+    import sys
+    from types import ModuleType, SimpleNamespace
+
+    from analysis import modal_app
+
+    design = ModuleType("analysis.design")
+    loop = ModuleType("analysis.design.loop")
+    loop.SAMPLING_STEPS, loop.CONFIDENCE_SAMPLING_STEPS = 1, 50
+    design.loop = loop
+    monkeypatch.setitem(sys.modules, "analysis.design", design)
+    monkeypatch.setitem(sys.modules, "analysis.design.loop", loop)
+    received = {}
+
+    def capture(**kwargs):
+        received.update(kwargs)
+        return None, None, [], [], ()
+
+    cls = modal_app.ESMFold2DesignModal._get_user_cls()
+    worker = cls()
+    worker.driver = SimpleNamespace(design=capture)
+    cls.design._get_raw_f()(
+        worker, target_sequence="A", sampling_steps=sampling_steps, stop_after_steps=1
+    )
+    assert (received["sampling_steps"], received["confidence_sampling_steps"]) == expected

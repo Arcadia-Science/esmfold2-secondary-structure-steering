@@ -10,7 +10,6 @@ metadata without a Modal account.
 """
 
 from __future__ import annotations
-import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -157,8 +156,6 @@ class ArmSpec:
     key: str
     label: str
     schedule: LossSchedule
-    initialization_prior: str | None = None
-    initialization_temperature: float = 1.0
 
 
 ARM_SPECS: dict[str, ArmSpec] = {
@@ -298,115 +295,9 @@ CRITIC_MODELS = (
     "ESMFold2-Experimental",
     "ESMFold2-Experimental-Cutoff2025",
 )
-INITIALIZATION_BASELINES = ("vanilla", "helix_mean_w10", "helix_mean_w20")
 
 N_SEEDS = 30
 SGD_STEPS = 150
-
-# Initialization follow-ups use the same target registry and campaign defaults.
-INITIALIZATION_TARGET = "pdl1_igv"
-INITIALIZATION_MARGIN = 0.001
-INITIALIZATION_SPECS = {
-    "softness": {
-        "checkpoint": PRIMARY_CRITIC,
-        "length": 120,
-        "num_loops": 1,
-        "sampling_steps": 50,
-        "modes": ["soft", "onehot", "discrete"],
-        "dropout": [0.0, 0.5],
-        "replicates": 2,
-        "inputs": 10,
-        "torch_compile": False,
-        "controls": [
-            {
-                "name": "alpha_4HRR_A",
-                "sequence": (
-                    "VDAAVAKVCGSEAIKANLRRSWGVLSADIEATGLMLMSNLFTLRPDTKTYFTRLGDVQKGKANSKLRGHA"
-                    "ITLTYALNNFVDSLDDPSRLKCVVEKFAVNHINRKISGDAFGAIVEPMKETLKARMGNYYSDDVAGAWAA"
-                    "LVGVVQAAL"
-                ),
-            },
-            {
-                "name": "beta_4Z2O_A",
-                "sequence": (
-                    "SPDMKLLAGASNWVNQSGSVAQFVFTPSPTQPQTYEVSGNYINNAQGTGCKGTPYPLSGAYYSGNQIISF"
-                    "SVVWSNASANCQSATGWTGYFDFSGSQAVLKTDWNLAFYSGSTPAIQQGQDDFMQSV"
-                ),
-            },
-            {
-                "name": "mixed_3VZ9_B",
-                "sequence": (
-                    "TKERVERLCKSKELFEERLGLEIRRIHNEQLQFIFRHIDHKDPDKPYMFTLSINEQGDYEVTSCTPPLDC"
-                    "ISEFQLKVRETNNFSAFIANIRKAFTALSFKQS"
-                ),
-            },
-        ],
-    },
-    "short": {
-        "binder_length": 120,
-        "pairs": 10,
-        "arms": ["uniform", "helix", "sheet"],
-        "updates": 40,
-        "annealing_horizon": SGD_STEPS,
-        "probability_margin": INITIALIZATION_MARGIN,
-        "coordinate_solver_steps": 50,
-    },
-    "full": {
-        "probability_margin": INITIALIZATION_MARGIN,
-        "steps": SGD_STEPS,
-        "optimization_solver_steps": 1,
-        "confidence_selection_solver_steps": 50,
-        "critic_solver_steps": 200,
-        "critic_num_loops": 3,
-        "primary_critic": PRIMARY_CRITIC,
-        "n_seeds": N_SEEDS,
-        "temperatures": [1, 2, 4],
-        "steering": "none",
-    },
-}
-
-
-def short_trajectory_arms(temperature: float = 1.0) -> dict[str, str]:
-    """Register the matched prior conditions, keeping the uniform control distinct."""
-    value = float(temperature)
-    label = str(int(value)) if value.is_integer() else str(value)
-    arms = {
-        prior: f"init_{prior}_t{label}_short" for prior in INITIALIZATION_SPECS["short"]["arms"]
-    }
-    for prior, key in arms.items():
-        ARM_SPECS[key] = ArmSpec(
-            key=key,
-            label="Uniform" if prior == "uniform" else f"{prior.title()} prior",
-            schedule=schedule.VANILLA,
-            initialization_prior=prior,
-            initialization_temperature=value,
-        )
-    return arms
-
-
-SHORT_TRAJECTORY_ARMS = short_trajectory_arms()
-
-
-def full_initialization_arm(temperature: float = 1.0) -> str:
-    """Register a full sheet-prior campaign at the requested temperature."""
-    value = float(temperature)
-    label = str(int(value)) if value.is_integer() else str(value)
-    key = f"init_sheet_t{label}"
-    ARM_SPECS[key] = ArmSpec(
-        key=key,
-        label=f"Sheet prior T={label}",
-        schedule=schedule.VANILLA,
-        initialization_prior="sheet",
-        initialization_temperature=value,
-    )
-    return key
-
-
-FULL_INITIALIZATION_ARMS = {
-    temperature: full_initialization_arm(temperature)
-    for temperature in INITIALIZATION_SPECS["full"]["temperatures"]
-}
-
 
 ONSET_SCAN: dict[int, str] = {
     0: "helix_mean_w20",
@@ -457,20 +348,13 @@ def target(key: str) -> TargetSpec:
 
 
 def arm(key: str) -> ArmSpec:
-    """Look up one arm, registering initialization conditions as needed."""
-    if key not in ARM_SPECS and (
-        match := re.fullmatch(r"init_(uniform|helix|sheet)_t(.+)_short", key)
-    ):
-        short_trajectory_arms(float(match[2]))
-    if key not in ARM_SPECS and (match := re.fullmatch(r"init_sheet_t(.+)", key)):
-        full_initialization_arm(float(match[1]))
+    """Look up one loss arm."""
     return ARM_SPECS[key]
 
 
 def publication_campaigns() -> list[tuple[str, str]]:
     """The exact target–arm combinations used by the publication."""
     grid = {(t, a) for t in TARGET_SPECS for a in CAMPAIGN_ARMS}
-    grid.update((INITIALIZATION_TARGET, a) for a in ONSET_SCAN.values())
-    grid.update((INITIALIZATION_TARGET, a) for a in RELEASE_SCAN.values())
-    grid.update((INITIALIZATION_TARGET, a) for a in SHORT_TRAJECTORY_ARMS.values())
+    grid.update((DEFAULT_TARGET, a) for a in ONSET_SCAN.values())
+    grid.update((DEFAULT_TARGET, a) for a in RELEASE_SCAN.values())
     return sorted(grid)

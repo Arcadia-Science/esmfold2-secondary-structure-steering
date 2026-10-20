@@ -2,7 +2,6 @@
 
 The reference archive contains frozen search results, entry metadata and CIFs.
 Campaign archives contain model structures, scores, traces and protocols.
-Initialization archives preserve original runs, including exact tensors and audits.
 Existing local inputs are used directly. Missing inputs can be fetched once the
 study archive is published; importing or executing analysis never launches a GPU.
 """
@@ -138,61 +137,6 @@ DESIGN_TABLES = DataArtifact(
     description="campaign structures, model scores, traces, and protocols",
 )
 
-INITIALIZATION_INPUTS = DataArtifact(
-    filename="initialization-inputs.zip",
-    extract_dir=paths.INITIALIZATION,
-    description="initialization structures, model scores, and optimization traces",
-)
-
-
-def initialization_members(root: Path | None = None) -> list[Path]:
-    """Archive original run outputs and provenance without a publication copy."""
-    from analysis.targets import INITIALIZATION_SPECS
-
-    root = paths.INITIALIZATION if root is None else root
-    experiments = ["softness"]
-    members = []
-    for name in experiments:
-        directory = root / name
-        protocol = directory / "protocol.json"
-        if not protocol.is_file():
-            raise FileNotFoundError(f"Missing original run protocol: {protocol}")
-        # These directories contain collected runs, never reports or pilot copies.
-        members.append(protocol)
-        for filename in ("inputs.json", "calls.json", "manifest.json", "manifest.csv"):
-            if (directory / filename).is_file():
-                members.append(directory / filename)
-        run_dirs = sorted(directory.glob("input[0-9][0-9]"))
-        expected = INITIALIZATION_SPECS[name]["inputs"]
-        if len(run_dirs) != expected:
-            raise ValueError(f"Expected {expected} collected runs in {directory}")
-        for run in run_dirs:
-            for filename in ("initialization.pt", "audit.json"):
-                if not (run / filename).is_file():
-                    raise FileNotFoundError(
-                        f"Missing original input or provenance: {run / filename}"
-                    )
-        for folder in [directory / "inputs", directory / "source", *run_dirs]:
-            members.extend(
-                p
-                for p in folder.rglob("*")
-                if p.is_file()
-                and (
-                    p.suffix in {".pdb", ".pt", ".npz", ".py"}
-                    or p.name
-                    in {
-                        "audit.json",
-                        "protocol.json",
-                        "critics.json",
-                        "complete.json",
-                        "step_trace.csv",
-                        "readouts.csv",
-                    }
-                    or (name == "softness" and "_drop" in p.name and p.suffix == ".json")
-                )
-            )
-    return sorted(set(members))
-
 
 def reference_members() -> list[Path]:
     """What the reference archive holds: the frozen search results and structures.
@@ -221,18 +165,10 @@ def reference_members() -> list[Path]:
 
 def design_members() -> list[Path]:
     """Preserve the published campaigns' model outputs, never derived measurements."""
-    from analysis.targets import CRITIC_MODELS, N_SEEDS, publication_campaigns
-    from analysis.targets import arm as get_arm
+    from analysis.targets import N_SEEDS, publication_campaigns
 
     members = []
-    campaigns = list(publication_campaigns())
-    for file in sorted(paths.CAMPAIGNS.glob("*__init_*/protocol.json")):
-        protocol = json.loads(file.read_text())
-        get_arm(protocol["arm"])
-        pair = (protocol["target"], protocol["arm"])
-        if pair not in campaigns:
-            campaigns.append(pair)
-    for target, arm in campaigns:
+    for target, arm in publication_campaigns():
         directory = paths.campaign_dir(target, arm)
         required = [
             directory / name
@@ -244,63 +180,10 @@ def design_members() -> list[Path]:
         ]
         protocol_path = paths.campaign_protocol(target, arm)
         protocol = json.loads(protocol_path.read_text()) if protocol_path.is_file() else {}
-        if protocol.get("output_kind") == "trajectory":
-            required.append(paths.campaign_manifest(target, arm))
-            for seed in range(protocol["n_seeds"]):
-                run = paths.campaign_run(target, arm, seed)
-                required.extend(
-                    run / name
-                    for name in (
-                        "initialization.pt",
-                        "audit.json",
-                        "protocol.json",
-                        "complete.json",
-                        "step_trace.csv",
-                        "readouts.csv",
-                    )
-                )
-                for step in range(protocol["sgd_steps"]):
-                    required.extend(
-                        [
-                            run / f"state{step:03d}.pt",
-                            paths.campaign_step_complexes(target, arm, seed)
-                            / f"step{step:03d}.pdb",
-                        ]
-                    )
-                required.extend(run.glob("*.py"))
-                required.extend(run.glob("*.jsonl"))
-                required.extend(run.glob("collected.json"))
-            required.extend((directory / "submission").glob("*.json"))
-            required.extend((directory / "submission").glob("*.csv"))
-        else:
-            required.extend(
-                paths.campaign_complexes(target, arm) / f"seed{seed:02d}.pdb"
-                for seed in range(protocol.get("n_seeds", N_SEEDS))
-            )
-            if protocol.get("experiment") == "full":
-                required.append(paths.campaign_manifest(target, arm))
-                submission = directory / "submission"
-                required.extend(submission / name for name in ("protocol.json", "inputs.json"))
-                for seed in range(protocol["n_seeds"]):
-                    run = paths.campaign_run(target, arm, seed)
-                    required.extend(
-                        run / name
-                        for name in (
-                            "initialization.pt",
-                            "sequence-states.pt",
-                            "audit.json",
-                            "protocol.json",
-                            "complete.json",
-                            "critics.json",
-                            "step_trace.csv",
-                            "step_trace.jsonl",
-                            "collected.json",
-                            *(f"{name}.pdb" for name in CRITIC_MODELS),
-                        )
-                    )
-                    required.extend(run.glob("*.py"))
-                    if protocol["initialization_temperature"] != 1:
-                        required.append(submission / "inputs" / f"seed{seed:02d}-features.pt")
+        required.extend(
+            paths.campaign_complexes(target, arm) / f"seed{seed:02d}.pdb"
+            for seed in range(protocol.get("n_seeds", N_SEEDS))
+        )
         missing = [p for p in required if not p.is_file()]
         if missing:
             raise FileNotFoundError(f"Incomplete campaign inputs: {missing[:5]}")

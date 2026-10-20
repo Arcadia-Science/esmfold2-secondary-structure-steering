@@ -7,33 +7,24 @@ does not call this module. GPU reruns produce new samples, not exact replicas.
 """
 
 from __future__ import annotations
-import io
 import json
-import shutil
-import tempfile
 import time
-import zipfile
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Any
 
-import numpy as np
 import pandas as pd
 import typer
 
-from analysis import artifacts, composition, deposit, initialization, loss_trace, paths, priors
-from analysis.results import CampaignOutput, DesignCompletion, DesignResult, RunSpec
+from analysis import artifacts, composition, deposit, loss_trace, paths
+from analysis.results import CampaignOutput
 from analysis.targets import (
     ARM_SPECS,
     CAMPAIGN_ARMS,
-    CRITIC_MODELS,
-    INITIALIZATION_TARGET,
     N_SEEDS,
     SGD_STEPS,
     TARGET_SPECS,
-    full_initialization_arm,
-    short_trajectory_arms,
 )
 from analysis.targets import (
     arm as get_arm,
@@ -145,10 +136,6 @@ def spawn_campaign(
     """
     spec = get_target(target)
     arm_spec = get_arm(arm)
-    if arm_spec.initialization_prior is not None:
-        raise ValueError(
-            "Prior arms require prepared inputs; use --experiment short or --experiment full"
-        )
     manifest_path = paths.campaign_manifest(target, arm)
 
     import modal
@@ -177,7 +164,9 @@ def spawn_campaign(
         if json.loads(protocol_path.read_text()) != protocol:
             raise ValueError(f"Campaign settings differ from the saved protocol: {protocol_path}")
     else:
-        initialization.save(protocol_path, protocol)
+        partial = protocol_path.with_suffix(".tmp")
+        partial.write_text(json.dumps(protocol, indent=2) + "\n")
+        partial.replace(protocol_path)
 
     remote = modal.Cls.from_name(APP_NAME, REMOTE_CLASS)()
 
@@ -213,13 +202,6 @@ def spawn(
     log_step_structures: bool = typer.Option(
         False, help="Return every step's predicted complex as a PDB."
     ),
-    experiment: str = typer.Option(
-        "", help="Prepared initialization experiment: softness, short, full."
-    ),
-    temperature: float = typer.Option(1.0, help="Prior temperature for short/full initialization."),
-    root: Annotated[
-        Path, typer.Option(help="Preserved initialization run directory.")
-    ] = paths.INITIALIZATION,
 ) -> None:
     """Launch one campaign on Modal and write its call manifest.
 
@@ -228,25 +210,8 @@ def spawn(
     costs, and logging structures returns one complex per step, so the two
     together turn a design into a trajectory at a many-fold higher price.
     """
-    if experiment:
-        if (
-            target
-            or arm
-            or n_seeds != N_SEEDS
-            or steps != SGD_STEPS
-            or sampling_steps
-            or log_step_structures
-        ):
-            raise typer.BadParameter(
-                "Initialization runs use the prepared protocol; omit campaign overrides"
-            )
-        frame = spawn_initialization(root.expanduser().resolve(), experiment, temperature)
-        typer.echo(f"Recorded {len(frame)} jobs for {experiment}")
-        return
     if not target or not arm:
-        raise typer.BadParameter("Supply --target and --arm, or --experiment")
-    if temperature != 1 or root != paths.INITIALIZATION:
-        raise typer.BadParameter("--temperature and --root require --experiment")
+        raise typer.BadParameter("Supply --target and --arm")
     if artifacts.status(target, arm).has_results:
         typer.echo(
             f"Results already present for {target} / {arm}: "
@@ -296,358 +261,6 @@ def _write_step_complexes(target: str, arm: str, seed: int, blob: bytes) -> None
         (directory / f"step{step:03d}.pdb").write_text(pdb_text)
 
 
-def _register_short_campaigns(protocol: dict, manifest: pd.DataFrame) -> dict[str, str]:
-    """Represent a jointly submitted trio as three ordinary campaign arms."""
-    arms = short_trajectory_arms(protocol["initialization_temperature"])
-    seeds = manifest.run.str.extract(r"^runs/pair(\d+)$", expand=False)
-    if seeds.isna().any() or seeds.astype(int).duplicated().any():
-        raise ValueError("Invalid matched-run manifest")
-    shared = manifest.assign(seed=seeds.astype(int)).drop(columns="run")
-    if not set(shared.seed).issubset(range(protocol["pairs"])):
-        raise ValueError("Unexpected matched-run seeds")
-    for prior, arm in arms.items():
-        settings = {
-            "target": protocol["target"],
-            "arm": arm,
-            "output_kind": "trajectory",
-            "initialization_prior": prior,
-            "initialization_temperature": protocol["initialization_temperature"],
-            "n_seeds": protocol["pairs"],
-            "sgd_steps": protocol["updates"],
-            "matched_input_set": protocol["protocol_id"],
-            "source_protocol": protocol,
-        }
-        path = paths.campaign_protocol(protocol["target"], arm)
-        if path.is_file() and initialization.read(path) != settings:
-            raise ValueError(f"Campaign settings differ from the saved protocol: {path}")
-        initialization.save(path, settings)
-        saved = read_manifest(path.parent / "manifest.csv", key="seed")
-        for row in saved.itertuples(index=False):
-            found = shared.loc[shared.seed == row.seed, "call_id"]
-            if len(found) != 1 or found.iloc[0] != row.call_id:
-                raise ValueError(f"Campaign call IDs differ: {path.parent}")
-        shared.to_csv(path.parent / "manifest.csv", index=False)
-    return arms
-
-
-def _copy_preserved(source: Path, destination: Path) -> None:
-    """Copy original bytes, refusing to replace a different model output."""
-    if destination.is_file():
-        if source.read_bytes() != destination.read_bytes():
-            raise ValueError(f"Different model output already exists: {destination}")
-        return
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(source, destination)
-
-
-def _register_full_campaign(directory: Path) -> str:
-    """Record a prepared full initialization as an ordinary campaign."""
-    original = initialization.read(directory / "protocol.json")
-    arm = full_initialization_arm(original["initialization_temperature"])
-    if original["arm"] != arm:
-        raise ValueError("Prepared initialization arm does not match its temperature")
-    target = original["target"]
-    settings = {
-        "target": target,
-        "arm": arm,
-        "arm_label": get_arm(arm).label,
-        "experiment": "full",
-        "initialization_prior": "sheet",
-        "initialization_temperature": original["initialization_temperature"],
-        "n_seeds": original["n_seeds"],
-        "sgd_steps": original["steps"],
-        "schedule": get_arm(arm).schedule.to_dict(),
-        "source_protocol": original,
-    }
-    path = paths.campaign_protocol(target, arm)
-    if path.is_file() and initialization.read(path) != settings:
-        raise ValueError(f"Campaign settings differ from the saved protocol: {path}")
-    initialization.save(path, settings)
-    submission = path.parent / "submission"
-    for file in [directory / "protocol.json", directory / "inputs.json"]:
-        _copy_preserved(file, submission / file.name)
-    for file in (directory / "inputs").glob("*.pt"):
-        _copy_preserved(file, submission / "inputs" / file.name)
-    return arm
-
-
-def _full_design_result(
-    source: Path, target: str, arm: str, seed: int, protocol: dict
-) -> CampaignOutput:
-    """Validate a full worker archive and separate its row from its artifacts."""
-    original = protocol["source_protocol"]
-    expected = RunSpec.from_protocol(protocol, seed=seed)
-    required = [
-        source / name
-        for name in (
-            "protocol.json",
-            "audit.json",
-            "initialization.pt",
-            "sequence-states.pt",
-            "complete.json",
-            "critics.json",
-            "step_trace.csv",
-            "step_trace.jsonl",
-            *(f"{name}.pdb" for name in CRITIC_MODELS),
-        )
-    ]
-    if missing := [file for file in required if not file.is_file()]:
-        raise FileNotFoundError(f"Incomplete full design: {missing[:5]}")
-    run_protocol = initialization.read(source / "protocol.json")
-    if any(run_protocol.get(key) != value for key, value in original.items()):
-        raise ValueError(f"Run protocol differs from submitted protocol: {source}")
-    completion = DesignCompletion.from_record(
-        initialization.read(source / "complete.json"),
-        target=run_protocol["target"],
-        prior=expected.initialization.prior,
-    )
-    completion.run.validate_against(expected)
-    trace = initialization.trace(source / "step_trace.csv", protocol["sgd_steps"])
-    if not trace.arm.eq(arm).all():
-        raise ValueError(f"Unexpected full-design trace arm: {source}")
-    if (
-        not trace.target.eq(target).all()
-        or not trace.seed.eq(seed).all()
-        or not trace["steering_loss (dimensionless)"].eq(0).all()
-        or not trace["base_structure_weight (dimensionless)"].eq(1).all()
-    ):
-        raise ValueError(f"Unexpected objective or run identity: {source}")
-    live_trace = loss_trace.load(source / "step_trace.jsonl").fillna(np.nan)
-    pd.testing.assert_frame_equal(trace, live_trace, check_dtype=False, check_like=True)
-
-    baseline_path = paths.campaign_trace(target, "vanilla")
-    if initialization.digest(baseline_path) != original["baseline_trace_sha256"]:
-        raise ValueError("Baseline trace changed since initialization preparation")
-    baseline = loss_trace.load_campaign(target, "vanilla")
-    matched = baseline[baseline.seed == seed].sort_values("step (index)").reset_index(drop=True)
-    if (
-        len(matched) != len(trace)
-        or trace.loc[0, "binder sequence"] != matched.loc[0, "binder sequence"]
-        or completion.initial_sequence != trace.loc[0, "binder sequence"]
-        or not trace["binder length (residues)"].eq(len(completion.initial_sequence)).all()
-        or not trace["inversion model"].eq(matched["inversion model"]).all()
-        or not np.allclose(trace["temperature (0-1)"], matched["temperature (0-1)"])
-    ):
-        raise ValueError(f"Unmatched initial sequence or optimization schedule: {source}")
-    selected = trace.loc[trace["iptm (0-1)"].idxmax()]
-    result = DesignResult.from_critics(
-        expected,
-        initialization.read(source / "critics.json"),
-        selected_step=int(selected["step (index)"]),
-    )
-    result.validate_critics(CRITIC_MODELS)
-    if result.designed_sequence != original["target_sequence"] + "|" + selected["binder sequence"]:
-        raise ValueError(f"Critic sequence differs from selected sequence: {source}")
-    completion.validate_against(result)
-    for critic in result.critics:
-        composition.secondary_structure.checked_backbone(
-            source / f"{critic.name}.pdb", result.binder_sequence
-        )
-
-    destination = paths.campaign_run(target, arm, seed)
-    for file in source.rglob("*"):
-        if file.is_file():
-            _copy_preserved(file, destination / file.relative_to(source))
-    return CampaignOutput.from_design(
-        result, trace.to_dict("records"), (source / f"{result.primary.name}.pdb").read_text()
-    )
-
-
-def _full_campaign_jobs(manifest: pd.DataFrame, target: str, arm: str, protocol: dict) -> Iterator:
-    """Reuse preserved full runs; poll only calls not yet collected."""
-    remaining = []
-    for row in manifest.itertuples(index=False):
-        folder = paths.campaign_run(target, arm, int(row.seed))
-        marker = folder / "collected.json"
-        if marker.is_file():
-            if initialization.read(marker)["call_id"] != row.call_id:
-                raise ValueError(f"Collected call ID differs from campaign manifest: {folder}")
-            yield row, _full_design_result(folder, target, arm, int(row.seed), protocol), ""
-        else:
-            remaining.append(row._asdict())
-    for row, payload, error in completed_jobs(pd.DataFrame(remaining, columns=manifest.columns)):
-        if error:
-            yield row, None, error
-            continue
-        with tempfile.TemporaryDirectory() as temporary:
-            folder = Path(temporary).resolve()
-            with zipfile.ZipFile(io.BytesIO(payload)) as archive:
-                if any(
-                    not (folder / n).resolve().is_relative_to(folder) for n in archive.namelist()
-                ):
-                    raise ValueError("Unsafe path in full-design archive")
-                archive.extractall(folder)
-            result = _full_design_result(folder, target, arm, int(row.seed), protocol)
-        initialization.save(
-            paths.campaign_run(target, arm, int(row.seed)) / "collected.json",
-            {"call_id": row.call_id},
-        )
-        yield row, result, ""
-
-
-def _write_trajectory_result(
-    source: Path, target: str, arm: str, seed: int, protocol: dict
-) -> tuple[dict, pd.DataFrame]:
-    """Validate one saved trajectory, retain its inputs, and normalize its identity."""
-    import torch
-
-    prior = protocol["initialization_prior"]
-    folder = source / prior
-    record = initialization.read(folder / "complete.json")
-    original = protocol["source_protocol"]
-    for key, expected in {
-        "pair": seed,
-        "arm": prior,
-        "updates": protocol["sgd_steps"],
-        "annealing_horizon": original["annealing_horizon"],
-        "initialization_temperature": protocol["initialization_temperature"],
-        "probability_margin": original["probability_margin"],
-    }.items():
-        if record[key] != expected:
-            raise ValueError(f"Unexpected {key}: {folder}")
-    run_protocol = initialization.read(source / "protocol.json")
-    if any(run_protocol.get(key) != value for key, value in original.items()):
-        raise ValueError(f"Run protocol differs from submitted protocol: {source}")
-    trace = initialization.trace(folder / "step_trace.csv", protocol["sgd_steps"])
-    # The worker returns all arms together. Check their shared schedules before
-    # assigning a matched-set identity to any one campaign's rows.
-    paired = []
-    campaign_arms = short_trajectory_arms(protocol["initialization_temperature"])
-    for name in original["arms"]:
-        other = initialization.trace(source / name / "step_trace.csv", protocol["sgd_steps"])
-        if not other.arm.eq(campaign_arms[name]).all():
-            raise ValueError(f"Unexpected trajectory arm: {source / name / 'step_trace.csv'}")
-        paired.append(
-            other.assign(
-                seed=seed,
-                **{
-                    "matched input set": protocol["matched_input_set"],
-                },
-            )
-        )
-    loss_trace.validate_matching(pd.concat(paired, ignore_index=True))
-    if (
-        not trace.target.eq(target).all()
-        or not trace.seed.eq(record["optimization_seed"]).all()
-        or not trace["steering_loss (dimensionless)"].eq(0).all()
-    ):
-        raise ValueError(f"Unexpected objective or run identity: {folder}")
-    initial = torch.load(source / "initialization.pt", map_location="cpu", weights_only=True)
-    state = torch.load(folder / "state000.pt", map_location="cpu", weights_only=True)
-    sequence = initial["bundle"]["sequence"]
-    prepared = state["prepared"]
-    if (
-        initial["bundle"]["pair"] != seed
-        or record["shared_initial_sequence"] != sequence
-        or trace.iloc[0]["binder sequence"] != sequence
-        or prepared["seq_list"] != [original["target_sequence"] + "|" + sequence]
-        or initial["features"].keys() != prepared["inputs"].keys()
-        or any(
-            not torch.equal(value, prepared["inputs"][key])
-            for key, value in initial["features"].items()
-        )
-        or not torch.equal(initial["logits"][prior], state["logits"])
-    ):
-        raise ValueError(f"Unmatched initial sequence, features or logits: {folder}")
-    readouts = pd.read_csv(folder / "readouts.csv")
-    if sorted(readouts.step.tolist()) != list(range(protocol["sgd_steps"])):
-        raise ValueError(f"Incomplete coordinate readouts: {folder}")
-    required = [source / name for name in ("initialization.pt", "audit.json", "protocol.json")]
-    required += [
-        folder / f"{prefix}{step:03d}.{suffix}"
-        for step in range(protocol["sgd_steps"])
-        for prefix, suffix in (("state", "pt"), ("step", "pdb"))
-    ]
-    if missing := [path for path in required if not path.is_file()]:
-        raise FileNotFoundError(f"Incomplete trajectory: {missing[:5]}")
-    destination = paths.campaign_run(target, arm, seed)
-    for file in [*source.iterdir(), *folder.iterdir()]:
-        if not file.is_file():
-            continue
-        output = (
-            paths.campaign_step_complexes(target, arm, seed) / file.name
-            if file.parent == folder and file.suffix == ".pdb"
-            else destination / file.name
-        )
-        _copy_preserved(file, output)
-    trace = trace.assign(
-        target=target,
-        seed=seed,
-        **{
-            "optimization seed": record["optimization_seed"],
-            "matched input set": protocol["matched_input_set"],
-        },
-    )
-    return {**record, "seed": seed, "arm": arm, "target": target}, trace
-
-
-def _save_trajectories(target: str, arm: str, records: list, traces: list) -> None:
-    pd.DataFrame(records).sort_values("seed").to_parquet(
-        paths.campaign_results(target, arm), index=False
-    )
-    pd.concat(traces, ignore_index=True).sort_values(["seed", "step (index)"]).to_parquet(
-        paths.campaign_trace(target, arm), index=False
-    )
-
-
-def import_short_trajectories(directory: Path) -> list[Path]:
-    """Import already collected trios without contacting Modal or altering originals."""
-    protocol = initialization.read(directory / "protocol.json")
-    manifest = read_manifest(directory / "manifest.csv", key="run")
-    if set(manifest.run) != {f"runs/pair{i:02d}" for i in range(protocol["pairs"])}:
-        raise ValueError("Incomplete matched-run manifest")
-    target = protocol["target"]
-    arms = _register_short_campaigns(protocol, manifest)
-    collected = {}
-    for arm in arms.values():
-        settings = initialization.read(paths.campaign_protocol(target, arm))
-        records, traces = [], []
-        for seed in range(protocol["pairs"]):
-            record, trace = _write_trajectory_result(
-                directory / f"runs/pair{seed:02d}", target, arm, seed, settings
-            )
-            records.append(record)
-            traces.append(trace)
-        collected[arm] = (records, traces)
-        for name in ("inputs.json", "protocol.json", "manifest.csv"):
-            _copy_preserved(directory / name, paths.campaign_dir(target, arm) / "submission" / name)
-    loss_trace.validate_matching(
-        pd.concat(
-            [trace for _, traces in collected.values() for trace in traces], ignore_index=True
-        )
-    )
-    for arm, (records, traces) in collected.items():
-        _save_trajectories(target, arm, records, traces)
-    return [paths.campaign_dir(target, arm) for arm in arms.values()]
-
-
-def _collect_trajectory_campaign(target: str, arm: str, protocol: dict) -> Collected:
-    manifest = read_manifest(paths.campaign_manifest(target, arm), key="seed")
-    records, traces = [], []
-    pending = failed = 0
-    for row, payload, error in completed_jobs(manifest):
-        if error:
-            pending += error == "pending"
-            failed += error != "pending"
-            typer.echo(f"seed {row.seed}: {error}")
-            continue
-        with tempfile.TemporaryDirectory() as temporary:
-            folder = Path(temporary).resolve()
-            with zipfile.ZipFile(io.BytesIO(payload)) as archive:
-                if any(
-                    not (folder / n).resolve().is_relative_to(folder) for n in archive.namelist()
-                ):
-                    raise ValueError("Unsafe path in trajectory archive")
-                archive.extractall(folder)
-            record, trace = _write_trajectory_result(folder, target, arm, int(row.seed), protocol)
-        records.append(record)
-        traces.append(trace)
-    if not records:
-        raise RuntimeError(f"No finished calls yet for {target} / {arm} ({pending} pending).")
-    _save_trajectories(target, arm, records, traces)
-    return Collected(target, arm, len(records), pending, failed, sum(map(len, traces)), None)
-
-
 def collect_campaign(target: str, arm: str) -> Collected:
     """Gather finished Modal calls into the tables, structures and loss log.
 
@@ -663,12 +276,6 @@ def collect_campaign(target: str, arm: str) -> Collected:
     rather than allowed to abort the whole collection, because one bad design
     out of hundreds should not cost the rest.
     """
-    protocol_path = paths.campaign_protocol(target, arm)
-    protocol = {}
-    if protocol_path.is_file():
-        protocol = initialization.read(protocol_path)
-        if protocol.get("output_kind") == "trajectory":
-            return _collect_trajectory_campaign(target, arm, protocol)
     manifest_path = paths.campaign_manifest(target, arm)
     if not manifest_path.is_file():
         raise FileNotFoundError(
@@ -684,12 +291,7 @@ def collect_campaign(target: str, arm: str) -> Collected:
     trace_rows: list[dict[str, object]] = []
     failures: list[str] = []
     pending = 0
-    jobs = (
-        _full_campaign_jobs(manifest, target, arm, protocol)
-        if protocol.get("experiment") == "full"
-        else completed_jobs(manifest)
-    )
-    for row, result, error in jobs:
+    for row, result, error in completed_jobs(manifest):
         if error == "pending":
             pending += 1
             continue
@@ -745,27 +347,11 @@ def collect(
     target: str = typer.Option("", help="Target key from analysis.targets."),
     arm: str = typer.Option("", help="Arm key from analysis.targets."),
     force: bool = typer.Option(False, help="Recollect even if results exist."),
-    experiment: str = typer.Option("", help="Initialization experiment: softness, short, full."),
-    temperature: float = typer.Option(1.0, help="Prior temperature for short/full initialization."),
-    root: Annotated[
-        Path, typer.Option(help="Preserved initialization run directory.")
-    ] = paths.INITIALIZATION,
 ) -> None:
     """Gather one campaign's finished calls into its tables and structures."""
-    if experiment:
-        if target or arm:
-            raise typer.BadParameter("Use either --experiment or --target/--arm")
-        collect_initialization(root.expanduser().resolve(), experiment, temperature, force=force)
-        return
     if not target or not arm:
-        raise typer.BadParameter("Supply --target and --arm, or --experiment")
-    if temperature != 1 or root != paths.INITIALIZATION:
-        raise typer.BadParameter("--temperature and --root require --experiment")
-    protocol_path = paths.campaign_protocol(target, arm)
-    full = (
-        protocol_path.is_file() and initialization.read(protocol_path).get("experiment") == "full"
-    )
-    if artifacts.status(target, arm).is_analysable and not force and not full:
+        raise typer.BadParameter("Supply --target and --arm")
+    if artifacts.status(target, arm).is_analysable and not force:
         typer.echo(
             f"Results already present: {paths.campaign_results(target, arm)}\n"
             f"Pass --force to recollect."
@@ -900,124 +486,16 @@ def run(
 
 
 @app.command()
-def prepare(
-    experiment: str = typer.Option(..., help="Initialization experiment: softness, short, full."),
-    temperature: float = typer.Option(1.0, help="Prior temperature for short/full initialization."),
-    root: Annotated[
-        Path, typer.Option(help="Preserved initialization run directory.")
-    ] = paths.INITIALIZATION,
-) -> None:
-    """Prepare matched initialization inputs before submitting GPU jobs."""
-    typer.echo(initialization.prepare_inputs(root.expanduser().resolve(), experiment, temperature))
-
-
-def spawn_initialization(root: Path, experiment: str, temperature: float) -> pd.DataFrame:
-    import modal
-
-    from analysis.modal_app import APP_NAME
-
-    protocol, jobs = initialization.prepared_jobs(root, experiment, temperature)
-    if protocol["app"] != APP_NAME:
-        raise ValueError(
-            "Prepared inputs name another Modal app; prepare a fresh run for this deployment"
-        )
-    if experiment == "softness":
-        worker = modal.Cls.from_name(APP_NAME, "FixedInputModal")()
-    else:
-        worker = modal.Cls.from_name(APP_NAME, REMOTE_CLASS).with_options(
-            timeout=7200, max_containers=10 if experiment == "full" else 5
-        )(load_critics=experiment == "full")
-    directory = initialization.experiment_dir(root, experiment, temperature)
-    if experiment == "full":
-        arm = _register_full_campaign(directory)
-        path = paths.campaign_manifest(protocol["target"], arm)
-    else:
-        path = directory / "manifest.csv"
-    manifest = submit_jobs(
-        path,
-        jobs,
-        key="seed" if experiment == "full" else "run",
-        submit=lambda job: getattr(worker, job["method"]).spawn(**job["kwargs"]),
-    )
-    if experiment == "short":
-        _register_short_campaigns(initialization.read(path.parent / "protocol.json"), manifest)
-    return manifest
-
-
-def collect_initialization(
-    root: Path, experiment: str, temperature: float, *, force: bool = False
-) -> None:
-    if experiment == "full":
-        arm = full_initialization_arm(temperature)
-        done = collect_campaign(INITIALIZATION_TARGET, arm)
-        typer.echo(f"Collected {done.n_designs} designs for {done.target} / {done.arm}")
-        return
-    directory = initialization.experiment_dir(root, experiment, temperature)
-    manifest = read_manifest(directory / "manifest.csv", key="run")
-    if manifest.empty:
-        raise FileNotFoundError(f"No submitted jobs in {directory}")
-    if experiment == "short":
-        protocol = initialization.read(directory / "protocol.json")
-        for arm in _register_short_campaigns(protocol, manifest).values():
-            if artifacts.status(protocol["target"], arm).is_analysable and not force:
-                continue
-            done = collect_campaign(protocol["target"], arm)
-            typer.echo(f"Collected {done.n_designs} trajectories for {done.target} / {done.arm}")
-        return
-    remaining = []
-    for row in manifest.to_dict("records"):
-        destination = directory / row["run"]
-        if not destination.resolve().is_relative_to(directory.resolve()):
-            raise ValueError("Unexpected run path in manifest")
-        if force or not (destination / "collected.json").is_file():
-            remaining.append(row)
-    for row, raw, error in completed_jobs(pd.DataFrame(remaining, columns=manifest.columns)):
-        if error:
-            typer.echo(f"{row.run}: {error}")
-            continue
-        destination = directory / row.run
-        with zipfile.ZipFile(io.BytesIO(raw)) as archive:
-            for member in archive.infolist():
-                path = destination / member.filename
-                if not path.resolve().is_relative_to(destination.resolve()):
-                    raise ValueError("Unexpected archive path")
-                if member.is_dir():
-                    path.mkdir(parents=True, exist_ok=True)
-                else:
-                    path.parent.mkdir(parents=True, exist_ok=True)
-                    path.write_bytes(archive.read(member))
-        initialization.save(destination / "collected.json", {"call_id": row.call_id})
-        typer.echo(f"Collected {destination}")
-
-
-@app.command()
-def prior() -> None:
-    """Calculate and print amino acid priors without saving a measurement cache."""
-    typer.echo(json.dumps(priors.from_reference(), indent=2))
-
-
-@app.command()
 def package(
-    experiment: str = typer.Option(
-        "campaigns", help="Input archive: campaigns, initialization, reference."
-    ),
-    root: Annotated[
-        Path, typer.Option(help="Initialization run directory, if selected.")
-    ] = paths.INITIALIZATION,
+    experiment: str = typer.Option("campaigns", help="Input archive: campaigns or reference."),
 ) -> None:
     """Package preserved inputs locally; does not upload or publish."""
-    if experiment == "initialization":
-        root = root.expanduser().resolve()
-        artifact = deposit.DataArtifact(
-            deposit.INITIALIZATION_INPUTS.filename, root, "initialization model outputs"
-        )
-        members = deposit.initialization_members(root)
-    elif experiment == "campaigns":
+    if experiment == "campaigns":
         artifact, members = deposit.DESIGN_TABLES, deposit.design_members()
     elif experiment == "reference":
         artifact, members = deposit.REFERENCE_INPUTS, deposit.reference_members()
     else:
-        raise typer.BadParameter("Choose campaigns, initialization, or reference")
+        raise typer.BadParameter("Choose campaigns or reference")
     typer.echo(artifact.package(members))
 
 

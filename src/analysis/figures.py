@@ -32,7 +32,6 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from matplotlib.colors import to_hex, to_rgba
-from matplotlib.patches import Patch
 from matplotlib.ticker import MaxNLocator
 
 apc.mpl.setup()
@@ -465,61 +464,6 @@ STRIP_MEDIAN_HALF_WIDTH = 0.28
 STRIP_MEDIAN_WIDTH = 3.2
 STRIP_JITTER_SEED = 0
 """Fixed so the jitter is identical every render; the offsets carry no meaning."""
-
-
-def arm_label(arm: str) -> str:
-    """Label mixed comparisons of steering weights and initialization priors."""
-    from analysis.targets import arm as get_arm
-
-    if arm == "vanilla":
-        return "Unsteered"
-    if arm in ARM_LABELS:
-        return f"Loss weight {ARM_LABELS[arm]}"
-    return get_arm(arm).label
-
-
-def outcome_panel(
-    designs: pd.DataFrame,
-    means: pd.DataFrame,
-    arms: list[str],
-    metric: str,
-    *,
-    threshold: float | None = None,
-) -> plt.Figure:
-    """One outcome panel with individual designs and caller-computed arm means.
-
-    The caller selects a target, orders the arms and supplies any screening
-    cutoff. Separate panels let Quarto arrange the figure and captions.
-    """
-    spec = METRICS[metric]
-    fig, axis = plt.subplots(figsize=(6.5, 4.5), layout="constrained")
-    rng = np.random.default_rng(STRIP_JITTER_SEED)
-    for position, arm in enumerate(arms):
-        color = ARM_COLORS[arm] if arm in ARM_COLORS else _prior_style(arm)[1]
-        values = designs.loc[designs.arm == arm, spec.column]
-        axis.scatter(
-            position + rng.uniform(-0.14, 0.14, len(values)),
-            values,
-            color=color,
-            alpha=0.75,
-            s=30,
-        )
-        mean = means.loc[arm, spec.column]
-        axis.plot([position - 0.23, position + 0.23], [mean, mean], color="black", lw=2)
-    if threshold is not None:
-        axis.axhline(threshold, color="#999999", ls="--", lw=1)
-    labels = [
-        arm_label(arm).replace("weight ", "weight\n").replace("prior T", "prior\nT") for arm in arms
-    ]
-    axis.set(
-        xticks=range(len(arms)),
-        xticklabels=labels,
-        ylabel=spec.design_label,
-        ylim=(0, 100) if metric == "plddt" else (0, 1),
-        xlim=(-0.5, len(arms) - 0.5),
-    )
-    axis.spines[["top", "right"]].set_visible(False)
-    return fig
 
 
 def scan_strip(
@@ -1535,119 +1479,6 @@ TRACE_METRICS: dict[str, TraceMetric] = {
 }
 
 
-def _prior_style(arm: str) -> tuple[str, str]:
-    from analysis.targets import arm as get_arm
-
-    spec = get_arm(arm)
-    colors = {"uniform": "#60676C", "helix": HELIX_COLOR, "sheet": "#347DA8"}
-    return spec.label, colors[spec.initialization_prior]
-
-
-def _trajectory_axis(axis, metric: str) -> None:
-    axis.spines[["top", "right"]].set_visible(False)
-    axis.grid(axis="y", color="#E7E7E7", lw=0.6)
-    axis.set_axisbelow(True)
-    axis.yaxis.set_major_locator(MaxNLocator(5))
-    axis.set_ylabel(TRACE_METRICS[metric].axis_label)
-    if metric in {"helix", "sheet"}:
-        axis.set(ylim=(-2, 100), yticks=[0, 20, 40, 60, 80, 100])
-    elif metric == "helix_mean":
-        axis.set_ylim(0, 1)
-
-
-def prior_trajectory_panel(
-    trace: pd.DataFrame,
-    means: pd.DataFrame,
-    arms: list[str],
-    metric: str,
-    *,
-    individuals: bool = True,
-    legend: bool = False,
-) -> plt.Figure:
-    """One panel from measured traces and caller-computed means indexed by arm/step.
-
-    Filtering coordinate readouts, selecting steps and aggregating matched
-    starts belong in the calling analysis. Separate figures allow Quarto to
-    arrange panels and supply their captions.
-    """
-    spec = TRACE_METRICS[metric]
-    scale = 100 if metric in {"helix", "sheet"} else 1
-    fig, axis = plt.subplots(figsize=(6, 4), layout="constrained")
-    for arm in arms:
-        label, color = _prior_style(arm)
-        if individuals:
-            for _, group in trace[trace.arm == arm].groupby("seed"):
-                group = group.sort_values("step (index)")
-                axis.plot(
-                    group["step (index)"],
-                    scale * group[spec.column],
-                    color=color,
-                    alpha=0.18,
-                    lw=0.9,
-                )
-        mean = means.xs(arm, level="arm")[spec.column].sort_index()
-        axis.plot(
-            mean.index,
-            scale * mean,
-            color=color,
-            lw=2.7,
-            label=label,
-            marker=None if individuals else "o",
-            ms=5,
-        )
-    _trajectory_axis(axis, metric)
-    axis.set_xlabel("Sequence updates completed")
-    axis.xaxis.set_major_locator(MaxNLocator(integer=True))
-    if metric == "entropy":
-        from analysis.priors import AA
-
-        uniform = np.log2(len(AA))
-        axis.axhline(uniform, color="#999999", lw=1, ls=(0, (6, 4)), zorder=0)
-        axis.annotate(
-            f"Uniform: {uniform:.3f} bits",
-            xy=(0.98, uniform),
-            xycoords=("axes fraction", "data"),
-            xytext=(0, 4),
-            textcoords="offset points",
-            ha="right",
-            fontsize=10,
-        )
-        axis.set_ylim(top=uniform + 0.1)
-    if legend:
-        axis.legend(
-            frameon=True,
-            facecolor="white",
-            edgecolor="none",
-            framealpha=0.9,
-            loc="lower left",
-            fontsize=11,
-        )
-    return fig
-
-
-def matched_composition_panel(
-    final: pd.DataFrame, means: pd.DataFrame, arms: list[str], metric: str
-) -> plt.Figure:
-    """Connect matched starts at one caller-selected state; black bars show supplied means."""
-    column = TRACE_METRICS[metric].column
-    values = 100 * final.pivot(index="seed", columns="arm", values=column).reindex(columns=arms)
-    fig, axis = plt.subplots(figsize=(5.5, 4.5), layout="constrained")
-    labels, colors = zip(*[_prior_style(arm) for arm in arms], strict=True)
-    for offset, (_, row) in zip(
-        np.linspace(-0.18, 0.18, len(values)), values.iterrows(), strict=True
-    ):
-        x = np.arange(len(arms)) + offset
-        axis.plot(x, row.to_numpy(), color="#9B9B9B", alpha=0.6, lw=0.9, zorder=1)
-        axis.scatter(x, row.to_numpy(), c=colors, s=42, zorder=2)
-    for x, arm in enumerate(arms):
-        mean = 100 * means.loc[arm, column]
-        axis.plot([x - 0.20, x + 0.20], [mean, mean], color="black", lw=2.5, zorder=3)
-        axis.text(x + 0.24, max(mean, 1.5), f"{round(mean, 10):.1f}%", va="center", fontsize=11)
-    _trajectory_axis(axis, metric)
-    axis.set(xticks=range(len(arms)), xticklabels=labels, xlim=(-0.4, len(arms) - 0.3))
-    return fig
-
-
 SEED_LINE_WIDTH = 0.8
 SEED_LINE_ALPHA = 0.45
 SEED_LINE_COLOR = HELIX_COLOR
@@ -1807,19 +1638,29 @@ def _entropy_trace_summary(spec, trace, arms) -> plt.Figure:
     last_step = trace["step (index)"].max()
     annotation_size = plt.rcParams["xtick.labelsize"]
     axis.text(
-        last_step, 4.34, "Uniform: 4.248 bits", ha="right", va="bottom",
+        last_step,
+        4.34,
+        "Uniform: 4.248 bits",
+        ha="right",
+        va="bottom",
         fontsize=annotation_size,
     )
     axis.set(
-        xlim=(0, last_step), ylim=(0, 4.7),
-        xlabel="optimization step (index)", ylabel=spec.axis_label,
+        xlim=(0, last_step),
+        ylim=(0, 4.7),
+        xlabel="optimization step (index)",
+        ylabel=spec.axis_label,
     )
     axis.set_xticks([0, 50, 100, last_step])
     apc.mpl.style_plot(axis)
     axis.legend(
-        loc="lower left", bbox_to_anchor=(0.05, 0.06),
-        ncol=1, frameon=False, fontsize=annotation_size,
-        handlelength=1.3, handletextpad=0.4,
+        loc="lower left",
+        bbox_to_anchor=(0.05, 0.06),
+        ncol=1,
+        frameon=False,
+        fontsize=annotation_size,
+        handlelength=1.3,
+        handletextpad=0.4,
     )
     figure.tight_layout()
     return figure
@@ -1848,52 +1689,3 @@ def schedule_trace_panels(medians, scans, drawn_steps) -> list[plt.Figure]:
                 )
             )
     return panels
-
-
-def initialization_prior(
-    prior: pd.Series, initialized: pd.Series, state: str, chosen: str, *, legend: bool = False
-) -> plt.Figure:
-    """Compare supplied prior and initialized probabilities at one sequence position."""
-    amino_acids = list("ACDEFGHIKLMNPQRSTVWY")
-    prior = prior.reindex(amino_acids, fill_value=0)
-    initialized = initialized.reindex(amino_acids, fill_value=0)
-    color = {"uniform": LOOP_COLOR, "helix": HELIX_COLOR, "sheet": SHEET_COLOR}[state]
-    selected_color = "#493466"
-    colors = [selected_color if aa == chosen else color for aa in amino_acids]
-    outline_colors = [selected_color if aa == chosen else ERROR_COLOR for aa in amino_acids]
-    positions = np.arange(len(amino_acids))
-    offset, width = 0.2, 0.36
-    figure, axis = plt.subplots(figsize=(8, 2.6))
-    axis.bar(
-        positions - offset, 100 * prior, width=width, facecolor="none",
-        edgecolor=outline_colors, linewidth=1, zorder=3,
-    )
-    axis.bar(positions + offset, 100 * initialized, width=width, color=colors, zorder=3)
-    axis.set(
-        xlim=(-0.7, 19.7),
-        ylim=(0, 1.18 * 100 * max(prior.max(), initialized.max())),
-        ylabel="Probability (%)",
-    )
-    axis.set_xticks(positions, amino_acids)
-    axis.yaxis.set_major_locator(MaxNLocator(nbins=4))
-    axis.spines[["top", "right"]].set_visible(False)
-    axis.tick_params(axis="both", length=0, pad=5)
-    for tick, aa in zip(axis.get_xticklabels(), amino_acids, strict=True):
-        if aa == chosen:
-            tick.set_color(selected_color)
-            tick.set_fontweight("bold")
-        elif aa == "C":
-            tick.set_color(BASELINE_COLOR)
-    axis.annotate(
-        f"{100 * initialized[chosen]:.2f}%",
-        (amino_acids.index(chosen) + offset, 100 * initialized[chosen]),
-        xytext=(0, 5), textcoords="offset points", ha="center",
-        color=selected_color,
-    )
-    if legend:
-        axis.legend(
-            handles=[Patch(facecolor=selected_color, label="Chosen")],
-            loc="upper right", frameon=False,
-        )
-    figure.tight_layout()
-    return figure

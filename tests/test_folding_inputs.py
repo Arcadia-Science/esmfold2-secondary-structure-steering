@@ -1,13 +1,10 @@
 """Check conditioning and gradient flow without importing the GPU model stack."""
 
 import ast
-import math
-import runpy
 from contextlib import nullcontext
 from pathlib import Path
 from types import SimpleNamespace
 
-import numpy as np
 import pytest
 import torch
 import torch.nn.functional as F
@@ -62,52 +59,6 @@ def test_default_preserves_soft_conditioning_and_gradients(folding):
     assert received["num_loops"] == 0 and received["num_sampling_steps"] == 1
     assert received["seed"] == 12 and received["calculate_confidence"] is False
     assert folding.preparation_calls[0][1]["seed"] is None
-    result["distogram_logits"].backward()
-    assert logits.grad is not None and logits.grad.abs().sum() > 0
-
-
-@pytest.mark.parametrize("temperature", [1, 1.5, 4])
-def test_minimum_boost_initialization_reaches_model_with_matching_discrete_features(
-    folding, temperature
-):
-    from analysis.priors import AA, matched_probabilities
-    from analysis.targets import INITIALIZATION_MARGIN
-
-    module = Path(__file__).resolve().parents[1] / "src/analysis/design/initialization.py"
-    prior_logits = runpy.run_path(str(module))["prior_logits"]
-    q = np.arange(1, 20, dtype=float)
-    q /= q.sum()
-    sequence = "IV" + "".join(AA)
-    order = list("ACDEFGHIKLMNPQRSTVWY")
-    optimization_temperature = 0.01 + 0.99 * 0.5 * (1 + math.cos(math.pi / 150))
-    logits, _ = prior_logits(
-        q,
-        sequence,
-        order,
-        optimization_temperature,
-        temperature=temperature,
-        margin=INITIALIZATION_MARGIN,
-    )
-    logits.requires_grad_(True)
-    design = (logits / optimization_temperature).softmax(-1)
-    target = F.one_hot(torch.tensor([[2, 3]]), 33).float()
-    received = {}
-
-    def model(**kwargs):
-        received.update(kwargs)
-        return {"distogram_logits": kwargs["res_type_soft"][..., 2].sum()}
-
-    result = folding.fold_and_get_distogram(model, "AC", target, design)
-    assert result["seq_list"] == ["AC|" + sequence]
-    soft_binder = received["res_type_soft"][0, 2:, 2:22]
-    assert torch.allclose(soft_binder, design[0])
-    np.testing.assert_allclose(
-        soft_binder[:, [order.index(aa) for aa in AA]].detach(),
-        matched_probabilities(q, sequence, temperature=temperature),
-        atol=1e-7,
-        rtol=1e-6,
-    )
-    assert soft_binder[:, order.index("C")].eq(0).all()
     result["distogram_logits"].backward()
     assert logits.grad is not None and logits.grad.abs().sum() > 0
 

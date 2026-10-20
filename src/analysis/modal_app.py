@@ -35,10 +35,6 @@ Unlike upstream's ``ESMFold2DesignModal``, the Modal class here holds an
 :meth:`load`. That keeps ``modal deploy`` runnable from an environment that has
 only ``modal`` installed, without ``esm`` or the Biohub ``transformers`` fork.
 
-The same design worker runs prior-initialized designs and paired trajectories.
-Paired runs disable critic loading. ``FixedInputModal`` shares the app and image
-but loads one uncompiled model for the zero-update screen. Model outputs and
-provenance from these experiments are preserved in the app's run volume.
 """
 
 import gzip
@@ -52,7 +48,7 @@ import modal
 
 from analysis import loss_trace
 from analysis.results import CampaignOutput, DesignResult, RunSpec
-from analysis.targets import DEFAULT_TARGET, INITIALIZATION_SPECS, SGD_STEPS
+from analysis.targets import DEFAULT_TARGET, SGD_STEPS
 from analysis.targets import arm as get_arm
 
 APP_NAME = os.environ.get("ESMFOLD2_SS_APP_NAME", "esmfold2-ss-steering")
@@ -333,20 +329,6 @@ class ESMFold2DesignModal:
         )
         return output.to_payload(schedule=arm_spec.schedule.to_dict())
 
-    @modal.method()
-    def design_prior(self, bundle: dict, protocol: dict) -> bytes:
-        from analysis.design.initialization import design_prior
-
-        if not self.load_critics:
-            raise ValueError("Full designs require the critic models")
-        return design_prior(self.driver, self.audit, self.sources, bundle, protocol, study)
-
-    @modal.method()
-    def design_pair(self, bundle: dict, protocol: dict) -> bytes:
-        from analysis.design.initialization import design_pair
-
-        return design_pair(self.driver, self.audit, self.sources, bundle, protocol, study)
-
 
 @app.local_entrypoint()
 def main(
@@ -401,48 +383,3 @@ def runtime_provenance() -> tuple[dict, dict]:
         if direct:
             audit[name + "_direct_url"] = json.loads(direct)
     return sources, audit
-
-
-@app.function(timeout=600, cpu=2)
-def prepare_screen_inputs() -> dict:
-    from analysis.design.initialization import prepare_screen_inputs as prepare
-
-    return prepare()
-
-
-@app.cls(gpu="H100", timeout=3600, cpu=8, memory=64 * 1024, max_containers=5)
-class FixedInputModal:
-    """Single uncompiled model for the zero-update screen and native controls."""
-
-    @modal.enter()
-    def load(self):
-        import inspect
-
-        from analysis.design.models import _load_hf_model
-
-        checkpoint = INITIALIZATION_SPECS["softness"]["checkpoint"]
-        pin_esmc_revision(ESMC_REVISION)
-        self.model = _load_hf_model(checkpoint, 0.5, True, "cuda")
-        self.sources, self.audit = runtime_provenance()
-        self.audit.update(
-            checkpoint=checkpoint,
-            model_config=self.model.config.to_dict(),
-            esmc_config=self.model._esmc.config.to_dict(),
-            parameter_dtype=str(next(self.model.parameters()).dtype),
-            torch_compile=False,
-            forward_signature=str(inspect.signature(self.model.forward)),
-        )
-
-    @modal.method()
-    def screen(self, bundle: bytes, target_sequence: str, protocol_id: str) -> bytes:
-        from analysis.design.initialization import screen
-
-        return screen(
-            self.model, self.audit, self.sources, bundle, target_sequence, protocol_id, study
-        )
-
-    @modal.method()
-    def controls(self, controls: list[dict], protocol_id: str) -> bytes:
-        from analysis.design.initialization import controls as run_controls
-
-        return run_controls(self.model, self.audit, controls, protocol_id, study)

@@ -4,7 +4,7 @@ import pandas as pd
 from IPython.display import HTML
 from pandas.io.formats.style import Styler
 
-from analysis.figures import ARM_LABELS, TARGET_LABELS, arm_label
+from analysis.figures import ARM_LABELS, TARGET_LABELS
 
 
 def _campaign_style(table: pd.DataFrame) -> Styler:
@@ -79,24 +79,6 @@ def screen_counts(table: pd.DataFrame) -> HTML:
         .set_properties(
             subset=pd.IndexSlice[(slice(None), ["Total", "Pass rate"]), :],
             **{"font-weight": "bold"},
-        )
-        .to_html()
-    )
-
-
-def initialization_summary(table: pd.DataFrame) -> HTML:
-    """Format precomputed initialization means and screen counts."""
-    return HTML(
-        table.rename(index={arm: arm_label(arm) for arm in table.index})
-        .style.format(
-            {
-                "Mean helix (%)": "{:.1f}",
-                "Mean sheet (%)": "{:.1f}",
-                "Mean ipTM": "{:.3f}",
-                "Mean pLDDT": "{:.1f}",
-                "Screen passes": "{:.0f}",
-                "Designs": "{:.0f}",
-            }
         )
         .to_html()
     )

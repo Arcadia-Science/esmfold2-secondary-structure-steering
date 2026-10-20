@@ -5,7 +5,6 @@ holds its serialized row separately from the trace and structure artifacts.
 """
 
 from __future__ import annotations
-import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, fields
 from typing import Any
@@ -16,37 +15,21 @@ from analysis.targets import arm as get_arm
 
 
 @dataclass(frozen=True)
-class InitializationSettings:
-    prior: str
-    temperature: float
-    probability_margin: float
-
-
-@dataclass(frozen=True)
 class RunSpec:
     target: str
     arm: str
     seed: int
     steps: int
-    initialization: InitializationSettings | None = None
     primary_critic: str = PRIMARY_CRITIC
 
     @classmethod
     def from_protocol(cls, protocol: Mapping, *, seed: int) -> RunSpec:
         original = protocol.get("source_protocol", protocol)
-        initialization = None
-        if "initialization_temperature" in original:
-            initialization = InitializationSettings(
-                prior=get_arm(protocol["arm"]).initialization_prior,
-                temperature=original["initialization_temperature"],
-                probability_margin=original["probability_margin"],
-            )
         return cls(
             target=protocol["target"],
             arm=protocol["arm"],
             seed=seed,
             steps=protocol["sgd_steps"] if "sgd_steps" in protocol else original["steps"],
-            initialization=initialization,
             primary_critic=original.get("primary_critic", PRIMARY_CRITIC),
         )
 
@@ -68,12 +51,6 @@ class RunSpec:
             "arm_label": get_arm(self.arm).label,
             "steps": self.steps,
         }
-        if self.initialization is not None:
-            row.update(
-                initialization_prior=self.initialization.prior,
-                initialization_temperature=self.initialization.temperature,
-                probability_margin=self.initialization.probability_margin,
-            )
         return row
 
 
@@ -186,92 +163,6 @@ class DesignResult:
         if self.binder_name is not None:
             row["binder_name"] = self.binder_name
         return row
-
-
-@dataclass(frozen=True)
-class DesignCompletion:
-    """The full worker's completion record, with its existing disk format."""
-
-    run: RunSpec
-    initial_sequence: str
-    binder_sequence: str
-    selected_step: int
-    iptm: float
-    binder_plddt: float
-
-    def __post_init__(self) -> None:
-        if len(self.initial_sequence) != len(self.binder_sequence):
-            raise ValueError("Initial and selected sequence lengths differ")
-
-    @classmethod
-    def from_record(cls, record: Mapping, *, target: str, prior: str) -> DesignCompletion:
-        run = RunSpec(
-            target=target,
-            arm=record["arm"],
-            seed=record["seed"],
-            steps=record["steps"],
-            initialization=InitializationSettings(
-                prior=prior,
-                temperature=record["initialization_temperature"],
-                probability_margin=record["probability_margin"],
-            ),
-            primary_critic=record["primary_critic"],
-        )
-        value = cls(
-            run=run,
-            initial_sequence=record["initial_sequence"],
-            binder_sequence=record["binder_sequence"],
-            selected_step=record["selected_step"],
-            iptm=record["iptm"],
-            binder_plddt=record["plddt"],
-        )
-        if record["binder_length"] != len(value.binder_sequence):
-            raise ValueError("Completion binder length differs from its sequence")
-        return value
-
-    @classmethod
-    def from_result(cls, result: DesignResult, initial_sequence: str) -> DesignCompletion:
-        return cls(
-            run=result.run,
-            initial_sequence=initial_sequence,
-            binder_sequence=result.binder_sequence,
-            selected_step=result.selected_step,
-            iptm=result.primary.iptm,
-            binder_plddt=result.primary.plddt.binder_plddt,
-        )
-
-    def validate_against(self, result: DesignResult) -> None:
-        self.run.validate_against(result.run)
-        if (
-            self.binder_sequence != result.binder_sequence
-            or self.selected_step != result.selected_step
-        ):
-            raise ValueError("Completion record differs from selected sequence")
-        if not all(
-            math.isclose(a, b, rel_tol=1e-5, abs_tol=1e-8)
-            for a, b in (
-                (self.iptm, result.primary.iptm),
-                (self.binder_plddt, result.primary.plddt.binder_plddt),
-            )
-        ):
-            raise ValueError("Completion record differs from primary critic")
-
-    def to_record(self) -> dict[str, object]:
-        settings = self.run.initialization
-        return {
-            "seed": self.run.seed,
-            "binder_length": len(self.binder_sequence),
-            "steps": self.run.steps,
-            "arm": self.run.arm,
-            "initialization_temperature": settings.temperature,
-            "probability_margin": settings.probability_margin,
-            "initial_sequence": self.initial_sequence,
-            "binder_sequence": self.binder_sequence,
-            "primary_critic": self.run.primary_critic,
-            "iptm": self.iptm,
-            "plddt": self.binder_plddt,
-            "selected_step": self.selected_step,
-        }
 
 
 def _empty_containers(value: object, path: str = "") -> list[str]:

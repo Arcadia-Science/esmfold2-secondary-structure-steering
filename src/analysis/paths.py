@@ -8,7 +8,6 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 DATA = REPO_ROOT / "data"
 TARGETS = DATA / "targets"
 CAMPAIGNS = DATA / "campaigns"
-INITIALIZATION = DATA / "initialization"
 
 ASSETS = REPO_ROOT / "assets"
 """Small tracked files a notebook cell needs at execution time.

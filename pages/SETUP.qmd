@@ -57,6 +57,11 @@ make execute
 
 (Make sure you're in the conda environment you created above)
 
+The GPU outputs have not yet been publicly deposited. Reproduction currently
+requires the preserved local campaign inputs and frozen natural-reference inputs.
+The notebook recalculates measurements from these inputs; it never launches GPU
+design jobs. See the repository README for the input layout and generation commands.
+
 This will execute and render the notebook `index.ipynb`, then build the publication site. To preview the site, use
 
 ```bash

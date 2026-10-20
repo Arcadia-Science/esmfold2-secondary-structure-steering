@@ -2,24 +2,20 @@
 
 import __future__
 import ast
-import io
 import json
 import logging
 import math
 import random
-import runpy
-import sys
 import time
 from contextlib import nullcontext
 from pathlib import Path
-from types import ModuleType, SimpleNamespace
+from types import SimpleNamespace
 
 import pandas as pd
 import pytest
 import torch
 import torch.nn.functional as F
 from analysis import loss_trace, schedule, targets
-from analysis.priors import AA, matched_probabilities
 
 
 @pytest.fixture
@@ -92,13 +88,9 @@ def design_loop():
     return namespace["design_binder"]
 
 
-@pytest.mark.parametrize("temperature", [1, 1.5, 2, 4])
-def test_arm_labels_reach_live_and_final_logs_without_changing_optimization(
-    design_loop, tmp_path, temperature
-):
-    arms = targets.short_trajectory_arms(temperature)
+def test_arm_labels_reach_live_and_final_logs_without_changing_optimization(design_loop, tmp_path):
     records = []
-    for label in [None, *arms.values(), targets.full_initialization_arm(temperature)]:
+    for label in [None, *targets.CAMPAIGN_ARMS]:
         file = tmp_path / f"{label}.jsonl"
         result = design_loop(
             inversion_models={"model": object()},
@@ -123,89 +115,3 @@ def test_arm_labels_reach_live_and_final_logs_without_changing_optimization(
         records.append(trace.drop(columns=["arm", "step time (s)"]))
     for trace in records[1:]:
         pd.testing.assert_frame_equal(trace, records[0])
-
-
-@pytest.mark.parametrize(
-    "experiment,pair,prior",
-    [("short", 0, "uniform"), ("short", 1, "helix"), ("short", 2, "sheet"), ("full", 0, "sheet")],
-)
-@pytest.mark.parametrize("temperature", [1, 1.5, 2, 4])
-def test_initialization_worker_passes_registered_arm_and_solver_budgets_to_design_loop(
-    tmp_path, monkeypatch, experiment, pair, prior, temperature
-):
-    names = [
-        "esm",
-        "esm.models",
-        "esm.models.esmfold2",
-        "esm.models.esmfold2.constants",
-        "analysis.design",
-        *[
-            f"analysis.design.{name}"
-            for name in ("constants", "folding", "loop", "losses", "sequence", "structure")
-        ],
-    ]
-    modules = {name: ModuleType(name) for name in names}
-    for name, module in modules.items():
-        monkeypatch.setitem(sys.modules, name, module)
-    order = list("ACDEFGHIKLMNPQRSTVWY")
-    modules["esm.models.esmfold2.constants"].PROTEIN_3TO1 = {aa: aa for aa in order}
-    modules["analysis.design.constants"].TOKENS = ["pad", "gap", *order]
-    modules["analysis.design.folding"].prepare_folding_inputs = lambda *args, **kwargs: {
-        "inputs": {"feature": torch.zeros(1)},
-        "seq_list": ["A|II"],
-    }
-    modules["analysis.design.folding"].fold_and_get_distogram = None
-    modules["analysis.design.losses"].get_mid_points = None
-    modules["analysis.design.sequence"].sequence_to_one_hot = None
-    modules["analysis.design.structure"].build_complex = None
-    received = {}
-
-    class ReachedDesignLoop(Exception):
-        pass
-
-    def capture(**kwargs):
-        received.update(kwargs)
-        raise ReachedDesignLoop
-
-    modules["analysis.design.loop"].design_binder = capture
-    monkeypatch.setattr(torch.Tensor, "cuda", lambda self: self)
-    file = Path(__file__).resolve().parents[1] / "src/analysis/design/initialization.py"
-    worker = runpy.run_path(str(file))["design_pair" if experiment == "short" else "design_prior"]
-    monkeypatch.setitem(worker.__globals__, "Path", lambda _: tmp_path)
-    arms = ["uniform", "helix", "sheet"]
-    q = [1 / len(AA)] * len(AA)
-    bundle = {
-        "pair": pair,
-        "sequence": "II",
-        "aa_order": AA,
-        **{arm: matched_probabilities(q, "II", temperature=temperature) for arm in arms},
-    }
-    protocol = {
-        **targets.INITIALIZATION_SPECS[experiment],
-        "binder_length": 2,
-        "target": "test",
-        "target_sequence": "A",
-        "protocol_id": "test",
-        "initialization_temperature": temperature,
-        "priors": {arm: q for arm in arms},
-    }
-    expected_arm = targets.short_trajectory_arms(temperature)[prior]
-    if experiment == "full":
-        features = io.BytesIO()
-        torch.save({"feature": torch.zeros(1)}, features)
-        bundle = {"seed": pair, "initial_sequence": "II", "features_blob": features.getvalue()}
-        expected_arm = targets.full_initialization_arm(temperature)
-        protocol.update(arm=expected_arm, aa_order=AA, sheet_pdf=q)
-    with pytest.raises(ReachedDesignLoop):
-        worker(
-            SimpleNamespace(inversion_models={}, hf_critic_models={}, esmc_model=None),
-            {},
-            {},
-            bundle,
-            protocol,
-            SimpleNamespace(commit=lambda: None),
-        )
-    assert received["arm"] == expected_arm
-    assert received["sampling_steps"] == 1
-    if experiment == "full":
-        assert received["confidence_sampling_steps"] == 50
