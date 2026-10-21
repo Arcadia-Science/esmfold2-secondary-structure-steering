@@ -57,11 +57,6 @@ make execute
 
 (Make sure you're in the conda environment you created above)
 
-The GPU outputs have not yet been publicly deposited. Reproduction currently
-requires the preserved local campaign inputs and frozen natural-reference inputs.
-The notebook recalculates measurements from these inputs; it never launches GPU
-design jobs. See the repository README for the input layout and generation commands.
-
 This will execute and render the notebook `index.ipynb`, then build the publication site. To preview the site, use
 
 ```bash
@@ -69,6 +64,21 @@ make preview
 ```
 
 This will open a local instance of the publication in your default browser.
+
+## Generate model outputs
+
+`make execute` measures preserved model outputs and never launches GPU work. To generate new designs you need a configured Modal account with access to the
+ESMFold2/ESMC models. Deploy the shared app, then spawn and collect a campaign:
+
+```bash
+modal deploy -m analysis.modal_app
+
+# As an example
+python -m analysis.campaign spawn --target pdl1_igv --arm vanilla
+python -m analysis.campaign collect --target pdl1_igv --arm vanilla
+```
+
+GPU runs cost compute and are not seed-reproducible, so a new run is a new sample rather than a replacement for the reported designs.
 
 ## Modify
 

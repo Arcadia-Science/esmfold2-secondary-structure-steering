@@ -10,9 +10,10 @@ The publication is hosted at [this URL](https://arcadia-science.github.io/2026-e
 - `data/campaigns`: campaign structures, model scores, traces and protocols. Not tracked.
 - `data/reference`: frozen search results, entry metadata and RCSB coordinates. Not tracked.
 
-The GPU outputs have not yet been publicly archived, so the untracked inputs must be
-supplied locally. Analysis recalculates secondary structure, reference selection and
-summaries from those inputs and never launches GPU work.
+Campaign outputs and frozen natural-reference inputs are archived on
+[Zenodo](https://doi.org/10.5281/zenodo.23542792) and downloaded automatically when
+needed. Analysis recalculates secondary structure, reference selection and summaries
+from those inputs.
 
 ## Reproduce
 

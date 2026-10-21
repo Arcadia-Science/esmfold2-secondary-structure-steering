@@ -96,13 +96,6 @@ def test_frozen_entry_metadata_needs_no_network(tmp_path, monkeypatch):
     assert rcsb.fetch_entries(["TEST"]) == {"TEST": entry}
 
 
-def test_unpublished_archive_reports_missing_local_inputs_without_network(tmp_path, monkeypatch):
-    monkeypatch.setattr(deposit, "ZENODO_RECORD", "PENDING")
-    artifact = deposit.DataArtifact("inputs.zip", tmp_path, "model outputs")
-    with pytest.raises(FileNotFoundError, match="not been published"):
-        artifact.fetch()
-
-
 def test_existing_archive_can_restore_missing_inputs(tmp_path):
     original = tmp_path / "model.pdb"
     original.write_text("preserved prediction")

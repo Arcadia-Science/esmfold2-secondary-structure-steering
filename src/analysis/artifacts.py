@@ -133,7 +133,7 @@ def load_all(
     if not frames:
         raise FileNotFoundError(
             f"No campaign results found under {paths.CAMPAIGNS}.\n"
-            "Supply the preserved model inputs; see analysis.deposit for archive availability."
+            "Fetch the published inputs with analysis.deposit.DESIGN_TABLES.fetch()."
         )
     return pd.concat(frames, ignore_index=True)
 

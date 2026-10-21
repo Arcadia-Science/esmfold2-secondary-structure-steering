@@ -2,8 +2,8 @@
 
 The reference archive contains frozen search results, entry metadata and CIFs.
 Campaign archives contain model structures, scores, traces and protocols.
-Existing local inputs are used directly. Missing inputs can be fetched once the
-study archive is published; importing or executing analysis never launches a GPU.
+Existing local inputs are used directly. Missing inputs are fetched from the
+published archives.
 """
 
 from __future__ import annotations
@@ -16,7 +16,7 @@ from pathlib import Path
 from analysis import paths
 
 PUBLIC_S3_BUCKET = "2026-esmfold2-secondary-structure-steering"
-ZENODO_RECORD = "PENDING"
+ZENODO_RECORD = "23542792"
 ZENODO_BASE_URL = f"https://zenodo.org/records/{ZENODO_RECORD}/files"
 
 REFERENCE_ARCHIVE = "natural-binder-inputs.zip"
@@ -69,13 +69,6 @@ class DataArtifact:
             with zipfile.ZipFile(self.archive_path) as archive:
                 archive.extractall(self.extract_dir)
             return self.archive_path
-        if ZENODO_RECORD == "PENDING":
-            raise FileNotFoundError(
-                f"Missing local inputs for {self.description}: {self.extract_dir}. "
-                "The study's GPU data have not been published yet. "
-                f"Supply the original run outputs or an archive at {self.archive_path}; "
-                "analysis will not launch GPU work."
-            )
         self.extract_dir.mkdir(parents=True, exist_ok=True)
         partial = self.archive_path.with_suffix(".partial")
         print(f"fetching {self.description} ({self.filename})...", flush=True)
@@ -89,8 +82,8 @@ class DataArtifact:
                     f"could not fetch {self.filename} from S3 bucket "
                     f"{PUBLIC_S3_BUCKET} or Zenodo record {ZENODO_RECORD}.\n"
                     f"  cause: {error}\n"
-                    f"If the deposit is not minted yet, the archive has to be "
-                    f"placed at {self.archive_path} by hand."
+                    f"Download {ZENODO_BASE_URL}/{self.filename}?download=1 "
+                    f"manually to {self.archive_path}."
                 ) from error
         with zipfile.ZipFile(partial) as archive:
             archive.extractall(self.extract_dir)

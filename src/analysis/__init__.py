@@ -10,7 +10,7 @@ Layout:
 - :mod:`analysis.schedule` holds the per-step weight schedules that turn a term
   into an arm.
 - :mod:`analysis.loss_trace` reads and writes the per-step loss logs.
-- :mod:`analysis.deposit` archives preserved inputs and fetches them when available.
+- :mod:`analysis.deposit` archives preserved inputs and fetches them when missing.
 - :mod:`analysis.confidence` splits ESMFold2's per-residue pLDDT by chain, so
   binder confidence can be read separately from the complex it sits in.
 - :mod:`analysis.artifacts` is the file-exists gate the notebook reads through.
