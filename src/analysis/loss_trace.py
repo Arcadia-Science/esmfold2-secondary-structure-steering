@@ -162,11 +162,6 @@ def load(path: Path) -> pd.DataFrame:
     return frame([json.loads(line) for line in lines])
 
 
-def is_available(target_key: str, arm: str) -> bool:
-    """True when the collected per-step log exists, no network needed."""
-    return paths.campaign_trace(target_key, arm).is_file()
-
-
 def load_campaign(target_key: str, arm: str) -> pd.DataFrame:
     """Read one campaign's collected per-step log, or raise saying how to make it."""
     path = paths.campaign_trace(target_key, arm)
@@ -182,16 +177,3 @@ def load_campaign(target_key: str, arm: str) -> pd.DataFrame:
     if not result.target.eq(target_key).all() or not result.arm.eq(arm).all():
         raise ValueError(f"Trace identities do not match campaign: {path}")
     return result
-
-
-def load_all(target_keys: list[str], arms: list[str]) -> pd.DataFrame:
-    """Every available per-step log concatenated, skipping absent ones."""
-    frames = [
-        load_campaign(key, name) for key in target_keys for name in arms if is_available(key, name)
-    ]
-    if not frames:
-        raise FileNotFoundError(
-            f"No per-step logs under {paths.CAMPAIGNS}. They are written when a "
-            f"campaign is collected."
-        )
-    return pd.concat(frames, ignore_index=True)

@@ -131,8 +131,3 @@ def load_all(target_keys: list[str], arms: list[str]) -> pd.DataFrame:
     if not frames:
         raise FileNotFoundError(f"No campaign composition tables under {paths.CAMPAIGNS}.")
     return pd.concat(frames, ignore_index=True)
-
-
-def available(target_keys: list[str], arms: list[str]) -> list[tuple[str, str]]:
-    """Which (target, arm) pairs have a composition table."""
-    return [(key, name) for key in target_keys for name in arms if is_available(key, name)]
