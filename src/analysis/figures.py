@@ -277,7 +277,7 @@ STATES: dict[str, State] = {
     "sheet": State(
         key="sheet",
         colour=SHEET_COLOR,
-        label="Beta sheet",
+        label="β-sheet",
         natural_column="binder_sheet_fraction",
         design_column="sheet (fraction 0-1)",
     ),
@@ -380,7 +380,7 @@ def _composition_comparison(spec, reference, designed, edges) -> plt.Figure:
         [f"{int(lo)}\u2013{int(hi)}" for lo, hi in zip(edges[:-1], edges[1:], strict=True)]
     )
     axis.set_xlabel("binder length (residues)")
-    axis.set_ylabel(f"mean {spec.label.lower()} (fraction of binder residues, 0-1)")
+    axis.set_ylabel(f"mean {spec.label.lower()} (fraction of binder residues, 0–1)")
     axis.legend(
         loc="lower left",
         bbox_to_anchor=(0.04, 1.0),
@@ -1434,7 +1434,7 @@ def _composition_means(means, figure, axis) -> plt.Figure:
         x=((len(arms) - 1) / 2 - left) / (right - left),
         ha="center",
     )
-    axis.set_ylabel("Mean chain in each state (0-1)")
+    axis.set_ylabel("Mean chain in each state (0–1)")
     apc.mpl.style_plot(axis, categorical_axes="x")
     axis.legend(
         loc="upper center",
@@ -1464,12 +1464,12 @@ TRACE_METRICS: dict[str, TraceMetric] = {
     "helix_mean": TraceMetric(
         key="helix_mean",
         column="helix_mean (0-1)",
-        axis_label="mean helix rung fraction (0-1)",
+        axis_label="mean helix rung fraction (0–1)",
     ),
     "iptm_proxy": TraceMetric(
         key="iptm_proxy",
         column="distogram iptm proxy (0-1)",
-        axis_label="distogram interface pTM proxy (0-1)",
+        axis_label="distogram ipTM proxy (0–1)",
     ),
     "entropy": TraceMetric(
         key="entropy",
@@ -1640,7 +1640,7 @@ def _entropy_trace_summary(spec, trace, arms) -> plt.Figure:
     axis.text(
         last_step,
         4.34,
-        "Uniform: 4.248 bits",
+        "Uniform: 4.248 bits",
         ha="right",
         va="bottom",
         fontsize=annotation_size,
