@@ -277,7 +277,7 @@ STATES: dict[str, State] = {
     "sheet": State(
         key="sheet",
         colour=SHEET_COLOR,
-        label="β-sheet",
+        label="Sheet",
         natural_column="binder_sheet_fraction",
         design_column="sheet (fraction 0-1)",
     ),
@@ -381,6 +381,7 @@ def _composition_comparison(spec, reference, designed, edges) -> plt.Figure:
     )
     axis.set_xlabel("binder length (residues)")
     axis.set_ylabel(f"mean {spec.label.lower()} (fraction of binder residues, 0–1)")
+    apc.mpl.style_plot(axis, categorical_axes="x")
     axis.legend(
         loc="lower left",
         bbox_to_anchor=(0.04, 1.0),
@@ -388,7 +389,6 @@ def _composition_comparison(spec, reference, designed, edges) -> plt.Figure:
         frameon=False,
         handlelength=1.0,
     )
-    apc.mpl.style_plot(axis, categorical_axes="x")
     figure.tight_layout()
     return figure
 
@@ -1464,7 +1464,7 @@ TRACE_METRICS: dict[str, TraceMetric] = {
     "helix_mean": TraceMetric(
         key="helix_mean",
         column="helix_mean (0-1)",
-        axis_label="mean helix rung fraction (0–1)",
+        axis_label="Helix proxy (0–1)",
     ),
     "iptm_proxy": TraceMetric(
         key="iptm_proxy",
@@ -1530,13 +1530,14 @@ def _seed_traces(spec: TraceMetric, trace: pd.DataFrame, target: str, arm: str) 
         grouped.to_numpy(),
         color=ERROR_COLOR,
         linewidth=TRACE_LINE_WIDTH,
-        label=f"median of {subset['seed'].nunique()} seeds",
+        label=f"Median of {subset['seed'].nunique()} seeds",
         zorder=3,
     )
 
     axis.set_xlabel("optimization step (index)")
     axis.set_ylabel(spec.axis_label)
     axis.set_xlim(0, subset["step (index)"].max())
+    apc.mpl.style_plot(axis)
     axis.legend(
         loc="lower left",
         bbox_to_anchor=(0.0, 1.0),
@@ -1545,7 +1546,6 @@ def _seed_traces(spec: TraceMetric, trace: pd.DataFrame, target: str, arm: str) 
         handlelength=1.2,
         handletextpad=0.4,
     )
-    apc.mpl.style_plot(axis)
     figure.tight_layout()
     return figure
 
