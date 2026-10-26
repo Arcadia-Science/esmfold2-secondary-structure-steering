@@ -72,7 +72,7 @@ filters:
 - _extensions/filter-warnings/filter-warnings.lua
 comments:
   giscus:
-    repo: Arcadia-Science/esmfold-secondary-structure-steering
+    repo: Arcadia-Science/esmfold2-secondary-structure-steering
     input-position: top
 reference-location: margin
 bibliography: ref.bib
