@@ -2,7 +2,7 @@
 
 This code repository contains or points to all materials required for creating and hosting the publication entitled, *"Steering secondary structure in ESMFold2 binder design"*.
 
-The publication is hosted at [this URL](https://arcadia-science.github.io/2026-esmfold2-secondary-structure-steering/).
+The publication is hosted at [this URL](https://arcadia-science.github.io/esmfold-secondary-structure-steering/).
 
 ## Data Description
 
