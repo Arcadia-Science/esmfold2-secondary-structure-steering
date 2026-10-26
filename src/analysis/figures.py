@@ -1173,7 +1173,7 @@ TRACE_METRICS: dict[str, TraceMetric] = {
     "iptm_proxy": TraceMetric(
         key="iptm_proxy",
         column="distogram iptm proxy (0-1)",
-        axis_label="distogram ipTM proxy (0–1)",
+        axis_label="Distogram ipTM proxy (0–1)",
     ),
     "entropy": TraceMetric(
         key="entropy",
@@ -1279,7 +1279,8 @@ def _trace_summary(spec, trace, arms) -> plt.Figure:
         endpoints.append(float(medians[-1]))
 
     last_step = float(trace["step (index)"].max())
-    span = max(endpoints) - min(endpoints)
+    lower, upper = axis.get_ylim()
+    span = upper - lower
     placed = _spread_labels(endpoints, span * LABEL_MIN_GAP_FRACTION, axis.get_ylim())
     for arm, height in zip(arms, placed, strict=True):
         axis.text(
