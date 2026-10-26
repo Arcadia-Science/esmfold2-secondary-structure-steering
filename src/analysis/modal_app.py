@@ -9,6 +9,7 @@ ESM and the Biohub transformers fork are loaded inside the GPU container.
 import gzip
 import json
 import os
+from pathlib import Path
 from typing import Any
 
 import modal
@@ -20,6 +21,8 @@ from analysis.targets import arm as get_arm
 
 APP_NAME = os.environ.get("ESMFOLD2_SS_APP_NAME", "esmfold2-ss-steering")
 MAX_CONTAINERS = int(os.environ.get("ESMFOLD2_SS_MAX_CONTAINERS", "30"))
+ESM_REVISION = "ba4d7124864eed323a93bf3cfefcd958f573b75a"
+TRANSFORMERS_REVISION = "ef32577f55da19a4989cd7b22e004dc43a4998cb"
 ESMC_REPO = "biohub/ESMC-6B"
 
 ESMC_REVISION = "45b0fa5d7fb06faefbd5e3b89bdcef35d564e79a"
@@ -86,7 +89,13 @@ def get_base_image():
                 "NVTE_FRAMEWORK": "pytorch",
             },
         )
-        .pip_install("abnumber", "esm@git+https://github.com/Biohub/esm.git@ba4d712", "modal")
+        .pip_install("abnumber", "modal")
+        .add_local_file(
+            Path(__file__).with_name("gpu_dependencies.py"),
+            "/tmp/install_legacy_esm.py",
+            copy=True,
+        )
+        .run_commands(f"python /tmp/install_legacy_esm.py {ESM_REVISION} {TRANSFORMERS_REVISION}")
         .env(
             {
                 "HF_HOME": "/models",
