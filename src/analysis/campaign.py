@@ -1,10 +1,4 @@
-"""Explicitly launch and collect GPU design campaigns.
-
-Generation reuses existing manifests and checks for model outputs before
-submitting jobs. Collection preserves structures, scores and optimization traces;
-composition and screening counts are calculated in memory. Publication execution
-does not call this module. GPU reruns produce new samples, not exact replicas.
-"""
+"""Explicitly launch GPU design campaigns and collect their model outputs."""
 
 from __future__ import annotations
 import json
@@ -117,15 +111,9 @@ def spawn_campaign(
     sampling_steps: int = 0,
     log_step_structures: bool = False,
 ) -> pd.DataFrame:
-    """Launch one campaign on Modal and write its call manifest.
+    """Submit missing seeds and record each Modal call in a resumable manifest.
 
-    Reuses recorded call IDs and submits only missing seeds. Each call is saved
-    immediately so an interrupted submission can resume from its manifest.
-
-    ``sampling_steps`` and ``log_step_structures`` are diagnostic. They are
-    recorded in ``protocol.json`` because they change what the run cost and what
-    it produced, and a campaign carrying per-step structures is not the same
-    artifact as one that does not.
+    Save the requested settings in the protocol; reject conflicting saved settings.
     """
     spec = get_target(target)
     arm_spec = get_arm(arm)
@@ -196,13 +184,7 @@ def spawn(
         False, help="Return every step's predicted complex as a PDB."
     ),
 ) -> None:
-    """Launch one campaign on Modal and write its call manifest.
-
-    ``--sampling-steps`` and ``--log-step-structures`` are for diagnostic runs.
-    Raising the solver budget makes every step cost what a confidence step
-    costs, and logging structures returns one complex per step, so the two
-    together turn a design into a trajectory at a many-fold higher price.
-    """
+    """Submit a campaign unless its results table already exists."""
     if not target or not arm:
         raise typer.BadParameter("Supply --target and --arm")
     if artifacts.status(target, arm).has_results:
@@ -236,13 +218,7 @@ class Collected:
 
 
 def _write_step_complexes(target: str, arm: str, seed: int, blob: bytes) -> None:
-    """Write one design's per-step complexes, numbered by step.
-
-    Does nothing when the design did not log them, which is every production
-    campaign; the diagnostic runs that do are a handful. Step numbers are zero
-    padded so the files sort in the order the optimizer produced them, which is
-    what a viewer loading a directory as a trajectory needs.
-    """
+    """Unpack logged complexes into PDB files numbered by optimization step."""
     from analysis.modal_app import unpack_structures
 
     structures = unpack_structures(blob)
@@ -255,19 +231,10 @@ def _write_step_complexes(target: str, arm: str, seed: int, blob: bytes) -> None
 
 
 def collect_campaign(target: str, arm: str) -> Collected:
-    """Gather finished Modal calls into the tables, structures and loss log.
+    """Save successful calls as score rows, structures, and a per-step loss log.
 
-    Each returned payload carries four kinds of thing, which go four places:
-    the predicted complex to ``all_complexes``, the per-step loss log to
-    ``step_trace.parquet``, the weight schedule nowhere, and everything else to
-    the per-design table via :class:`CampaignOutput`. The schedule is dropped
-    rather than stored because it is one fact about the whole campaign, already
-    written to ``protocol.json`` at spawn time.
-
-    Raises if no call has finished, rather than writing a table that looks
-    complete and is not. A call that failed remotely is recorded and skipped
-    rather than allowed to abort the whole collection, because one bad design
-    out of hundreds should not cost the rest.
+    Skip pending and failed calls. Raise if no successful results are available.
+    Keep schedules out of score rows; they are recorded in the campaign protocol.
     """
     manifest_path = paths.campaign_manifest(target, arm)
     if not manifest_path.is_file():
@@ -379,15 +346,9 @@ def ensure(
     steps: int = SGD_STEPS,
     poll_seconds: int = POLL_SECONDS,
 ) -> pd.DataFrame:
-    """Generate requested campaigns with missing model scores or structures.
+    """Submit campaigns missing scores or structures, then poll and collect them.
 
-    Derived measurements are never used to decide whether GPU work is needed.
-
-    All missing campaigns are spawned up front so they queue against the whole
-    container pool at once rather than one campaign at a time, but each is
-    collected as soon as its own designs resolve rather than at the end. That
-    matters for a long grid: an interruption halfway through leaves every
-    finished campaign already on disk instead of losing the lot.
+    Collect each campaign once all its saved calls have resolved.
     """
     unknown_targets = sorted(set(target_keys) - set(TARGET_SPECS))
     unknown_arms = sorted(set(arms) - set(ARM_SPECS))
@@ -467,11 +428,7 @@ def run(
     arms: str = typer.Option("", help="Comma-separated arms, blank for the pub grid."),
     n_seeds: int = typer.Option(N_SEEDS, help="Designs per campaign."),
 ) -> None:
-    """Generate every missing campaign, wait for it, and collect it.
-
-    This is the entry point a reader would use to reproduce the analysis on
-    their own Modal account. It launches nothing that already exists.
-    """
+    """Generate and collect campaigns missing model scores or structures."""
     keys = [k.strip() for k in targets.split(",") if k.strip()] or list(TARGET_SPECS)
     names = [a.strip() for a in arms.split(",") if a.strip()] or list(CAMPAIGN_ARMS)
     frame = ensure(keys, names, n_seeds=n_seeds, steps=SGD_STEPS)

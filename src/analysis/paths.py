@@ -1,4 +1,4 @@
-"""Repository-relative paths for every artifact the notebook reads or writes."""
+"""Artifact paths resolved from the repository root."""
 
 from __future__ import annotations
 from pathlib import Path

@@ -32,7 +32,7 @@ def composition(*, workers: int = DEFAULT_WORKERS) -> pd.DataFrame:
 
 
 def pairs(*, workers: int = DEFAULT_WORKERS) -> pd.DataFrame:
-    """Measure every candidate pair, retaining selection flags."""
+    """Return all candidate pairs with selection flags and representative measurements."""
     return table(PAIRS_TABLE, workers=workers)
 
 

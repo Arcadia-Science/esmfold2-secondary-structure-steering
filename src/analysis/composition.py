@@ -1,8 +1,4 @@
-"""Measure campaign composition from preserved predicted structures on every load.
-
-Confidence scores are expensive model outputs; DSSP assignments, fractions and
-screening summaries are derived in memory. No measurement cache is read or written.
-"""
+"""Measure secondary structure from saved campaign complexes without caching results."""
 
 from __future__ import annotations
 from pathlib import Path
@@ -126,7 +122,10 @@ def summarize_by_length(values: pd.Series, lengths: pd.Series, edges: np.ndarray
 
 
 def load_all(target_keys: list[str], arms: list[str]) -> pd.DataFrame:
-    """Measure all requested campaigns; missing inputs are an error."""
+    """Measure locally available campaigns, skipping missing inputs.
+
+    Raise FileNotFoundError if none are available.
+    """
     frames = [load(key, name) for key in target_keys for name in arms if is_available(key, name)]
     if not frames:
         raise FileNotFoundError(f"No campaign composition tables under {paths.CAMPAIGNS}.")

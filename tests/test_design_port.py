@@ -1,33 +1,10 @@
-"""Proof that :mod:`analysis.design` is a faithful port of the ESM cookbook.
+"""Compare selected design definitions and constants with the ESM cookbook.
 
-The upstream source of truth is ``cookbook/tutorials/binder_design.py`` at
-commit ``ba4d712`` of https://github.com/Biohub/esm. This module reads that
-blob straight out of git, writes it to a temporary file, imports it under a
-private name, and compares it against the ported modules two ways:
-
-1. Syntax-tree identity. Every ported function and class is parsed and compared
-   against its upstream definition with docstrings removed, so comments, blank
-   lines and formatter choices cannot hide a behavioural change. This covers
-   the whole port, including the parts that need a GPU to execute.
-2. Numerical identity. Every function that runs on CPU without model weights is
-   executed in both modules on the same fixed inputs and compared for exact
-   equality.
-
-``design_binder`` is deliberately absent from ``PORTED_DEFINITIONS``. It is
-where this publication's work lives: the steering terms, the per-step binding
-readout, the loss log, the
-sampling-step budget and the per-step structure dump. It has diverged far
-enough from the cookbook that pinning it against upstream stopped being useful,
-so it is not checked here. What it does is covered by the tests of the pieces it
-calls, and by the campaign artifacts it produces.
-
-Functions that cannot execute here are marked xfail with the reason, never
-skipped silently. Two things are missing in a CPU environment: a CUDA device
-with ESMFold2 and ESMC checkpoints, and ``abnumber``/ANARCI for the antibody
-CDR annotation path.
-
-The git blob is located from ``ESM_REPO`` if set, otherwise from the installed
-``esm`` package's checkout.
+Read commit ba4d712 from ``ESM_REPO`` or the installed ESM checkout. Compare
+syntax trees without docstrings and run available numerical comparisons.
+``design_binder`` is excluded from the syntax comparison. GPU and other
+unavailable execution paths have expected failures; missing dependencies or
+an unavailable upstream Git blob can skip collection.
 """
 
 from __future__ import annotations
@@ -215,7 +192,7 @@ def _module_source(dotted: str) -> str:
 
 @pytest.mark.parametrize(("name", "dotted"), sorted(PORTED_DEFINITIONS.items()))
 def test_ast_identical(name: str, dotted: str) -> None:
-    """Every ported definition parses to the same tree as upstream's."""
+    """Compare one registered definition's syntax tree with upstream's."""
     assert _definition(_module_source(dotted), name) == _definition(UPSTREAM_SOURCE, name)
 
 

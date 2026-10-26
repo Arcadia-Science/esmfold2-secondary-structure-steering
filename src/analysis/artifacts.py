@@ -1,16 +1,4 @@
-"""The file-exists gate that keeps the notebook off the GPU.
-
-Executing this notebook must not launch design campaigns. A campaign is roughly
-five GPU-hours on an H100 and costs real money, and the design loop is not
-seed-reproducible: across two runs of an identically configured arm, not one of
-thirty seeds reproduced its own result, with per-seed interface pTM moving 0.14
-to 0.20. Re-running would therefore produce different designs, not the ones in
-the figures.
-
-So every campaign read goes through :func:`load_campaign`, which returns the
-deposited table when it is present and never computes. Regenerating a campaign
-from scratch is an explicit, separate act: see :mod:`analysis.campaign`.
-"""
+"""Inspect and load preserved campaign artifacts without running design models."""
 
 from __future__ import annotations
 from dataclasses import dataclass
@@ -64,11 +52,7 @@ def status_table(
     target_keys: list[str] | None = None,
     arms: list[str] | None = None,
 ) -> pd.DataFrame:
-    """One row per campaign, showing what is on disk.
-
-    Call this first in the notebook. It is the honest answer to "can this
-    notebook produce its figures from what is here".
-    """
+    """Report artifact availability for each requested campaign."""
     keys = target_keys if target_keys is not None else list(TARGET_SPECS)
     names = arms if arms is not None else list(ARM_SPECS)
     rows = []
@@ -93,18 +77,14 @@ def missing(
     target_keys: list[str] | None = None,
     arms: list[str] | None = None,
 ) -> list[tuple[str, str]]:
-    """Campaigns with no per-design table, as (target, arm) pairs."""
+    """Return target–arm pairs missing a results table or predicted complexes."""
     keys = target_keys if target_keys is not None else list(TARGET_SPECS)
     names = arms if arms is not None else list(ARM_SPECS)
     return [(key, name) for key in keys for name in names if not status(key, name).is_analysable]
 
 
 def load_campaign(target_key: str, arm: str) -> pd.DataFrame:
-    """Per-design results for one campaign, read from disk.
-
-    Raises if the table is absent rather than computing it, and the message
-    says both how to fetch the deposit and how to regenerate.
-    """
+    """Load campaign scores, fetching the input archive if the table is missing."""
     results = paths.campaign_results(target_key, arm)
     if not results.is_file():
         deposit.DESIGN_TABLES.fetch()
@@ -116,11 +96,9 @@ def load_all(
     target_keys: list[str] | None = None,
     arms: list[str] | None = None,
 ) -> pd.DataFrame:
-    """Every available campaign concatenated, skipping absent ones.
+    """Concatenate locally analysable campaigns, skipping missing ones.
 
-    Unlike :func:`load_campaign` this does not raise on absence, so a partial
-    deposit still yields a figure. The set actually loaded is reported by
-    :func:`status_table`.
+    Raise FileNotFoundError if none are available.
     """
     keys = target_keys if target_keys is not None else list(TARGET_SPECS)
     names = arms if arms is not None else list(ARM_SPECS)

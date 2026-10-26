@@ -1,9 +1,4 @@
-"""Loading ESMFold2 checkpoints from HuggingFace, and torch.compile.
-
-Verbatim from ``cookbook/tutorials/binder_design.py`` at upstream commit
-``ba4d712``, lines 1061-1095. One ``# ty:ignore`` pragma was dropped; this
-repository does not run ty.
-"""
+"""Load ESMFold2 checkpoints and compile selected model modules."""
 
 from __future__ import annotations
 from typing import Any
@@ -24,8 +19,7 @@ _ESMC_CACHE: dict[str, torch.nn.Module] = {}
 
 
 def _load_hf_model(critic_name: str, lm_dropout: float, cache_esmc: bool, device: str) -> Any:
-    """Loads ESMFold2 from huggingface. Will cache ESMC by checkpoint ID among
-    all non-scaling checkpoints, to save on VRAM and load time."""
+    """Load an ESMFold2 checkpoint, optionally sharing cached ESMC weights."""
     repo_id = f"biohub/{critic_name}"
     model = ESMFold2ExperimentalModel.from_pretrained(repo_id, load_esmc=not cache_esmc)
     if cache_esmc:

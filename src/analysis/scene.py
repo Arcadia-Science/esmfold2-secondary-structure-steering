@@ -1,23 +1,7 @@
-"""Interactive molecular scene for the secondary-structure loss term.
+"""Illustrate binder i to i+4 contacts from deposited coordinates.
 
-The term this publication steers with is a plain mean: every residue's i to
-i + 4 contact probability is averaged, and that average is the penalty. The
-point the scene has to carry is that there is no selection step, so a reader
-can hover any residue in the binder and find it contributing on the same
-footing as every other.
-
-Contact probability comes from the distogram during optimization and is not
-recoverable from a deposited structure, so the scene reads the geometry
-instead: a rung counts when its Ca atoms sit closer than the same cutoff the
-term uses. That makes the displayed value the term evaluated with hard zero-one
-probabilities, which is the quantity the term's own docstring calls the
-expected helical-rung fraction.
-
-The structure the scene loads is the designed binder on its own. The complex it
-came from also held the target the binder was designed against, which owns no
-i to i + 4 rung the term ever sees and which, drawn even at low opacity, stood
-between the cursor and the helices the scene exists to show. It is gone from the
-asset rather than styled faintly.
+The display uses hard distance thresholds as a geometric illustration of the
+soft distogram loss; it does not recover optimization-time probabilities.
 """
 
 from __future__ import annotations
@@ -34,113 +18,41 @@ from analysis import steering
 
 CONTRIBUTING_COLOR = apc.cinnabar.hex_code
 ZERO_COLOR = apc.ghost.hex_code
-"""What the scene encodes: what each residue contributes to the term.
-
-Not secondary structure. The contributing colour is the publication's helix
-red, the hue of the quantity this term stands in for, but what the scene
-colours is still contribution: the term charges on an i to i+4 distance and
-makes no assignment, and a residue in a helix whose rung falls outside the
-cutoff takes the pale colour like any other.
-
-A residue contributes either one over the number of scored residues or exactly
-zero, with nothing in between, so these are two colours rather than a ramp. The
-trailing residues have no i+4 partner and take the same colour as a scored
-residue that contributes nothing, because the panel is about what reaches the
-sum and by that measure they are alike.
-
-The two are separated by 48.5 under the worst of normal vision, protanopia and
-deuteranopia.
-
-The pale one is a cool near-white, 1.9 from the background the viewer draws on.
-That is deliberate and is the one place in this publication where a colour is
-not readable against its surface on its own: the cartoon is lit and shadowed,
-so the ribbon reads as geometry rather than as fill, and a residue contributing
-nothing should recede to the point of being scenery. Anything encoded only by
-this colour would be invisible, so nothing is.
-"""
+"""Colours for counted and uncounted geometric contacts, including unscored termini."""
 ACCENT_COLOR = apc.charcoal.hex_code
 SURFACE_COLOR = "#FEF7F1"
 
 ENDPOINT_COLOR = apc.sky.hex_code
-"""A pale cyan, at both ends of a rung and along the rod between them, whether
-or not the rung counts.
-
-Taking the endpoint colour from the cartoon hid the endpoints, because a sphere
-sits on the very residue whose colour it was borrowing. Sky is 41.5 from the
-contributing red, the worst case over normal vision, simulated protanopia and
-simulated deuteranopia, and it is only 5.9 from the near-white a residue
-contributing nothing wears. Flat colour difference is not what separates them
-there: the spheres are lit solids with a specular highlight against a matte
-ribbon, and a dark sphere, which measures far better, reads as a hole in the
-cartoon rather than as a marker on it. The rod takes the same colour rather
-than the house charcoal it used to, which sits 3.7 from the contributing red
-under simulated deuteranopia and would read as part of the ribbon it crosses.
-"""
+"""Colour of contact endpoint spheres and the rod connecting them."""
 
 BINDER_CHAIN = "B"
 ENDPOINT_RADIUS = 1.65
 CYLINDER_RADIUS = 0.3
 DASH_LENGTH = 0.55
 GAP_LENGTH = 0.4
-"""Dash geometry for the rod between the two endpoints.
-
-3Dmol defaults both to 0.25, which at this rod thickness renders as a line of
-beads rather than a dashed rod. Lengthening the dash past the gap keeps it
-reading as a broken line at a radius chosen to sit against 1.65 A spheres.
-"""
+"""Gap length between contact-rod dashes."""
 LABEL_FONT_SIZE = 13
 LABEL_PAD = 12
 VIEW_WIDTH = "100%"
-"""Viewer width as a CSS length, so the scene tracks the article body.
-
-py3Dmol writes an integer straight into the container style as pixels, which
-leaves a viewer wider than the body overflowing it, and a molecule centred in
-the canvas then reads as off-centre because part of the canvas is not on
-screen. A percentage makes the container track whatever column it is placed in.
-"""
+"""Viewer width as a CSS length."""
 
 VIEW_HEIGHT = 560
-"""Viewer height in pixels, which stays fixed because nothing constrains it.
-
-The body sets the width; height has no equivalent to track, and a percentage
-height inside an auto-height block collapses to nothing.
-"""
+"""Viewer height in pixels."""
 
 ZOOM_DISTANCE_LIMITS = (25, 250)
-"""Camera-distance bounds in Å: allow close inspection but keep the binder visible.
-
-3Dmol takes distances here, not magnification factors. The upper limit prevents
-scrolling from shrinking the structure indefinitely.
-"""
+"""Camera-distance bounds in angstroms."""
 
 LABEL_MARGIN = 10
 """Inset of the pinned measurement from the top left corner, in screen pixels."""
 
 LABEL_BOX_PADDING = 4
-"""Pixels between a row's text and the edge of the row's own background box.
-
-This is 3Dmol's own default, restated here because the row spacing below is
-derived from it, and a default that moved underneath us would open gaps between
-the rows.
-"""
+"""Padding around each hover-label row, in pixels."""
 
 LABEL_LINE_HEIGHT = LABEL_FONT_SIZE * 1.25 + 2 * LABEL_BOX_PADDING
-"""How far apart to stack the rows of the hover label, in screen pixels.
-
-3Dmol measures a row of text, sizes a canvas as ``fontSize * 1.25 + 2 *
-padding`` with the 1.25 leaving room for descenders, and draws that canvas at
-exactly its own pixel size. Offsetting each row by that height therefore butts
-the rows against each other with neither a gap nor an overlap, so a stack of
-one-line labels reads as one block of text.
-"""
+"""Vertical spacing between hover-label rows, in pixels."""
 
 HOVER_DURATION_MS = 0
-"""Show the measurement on the first frame the cursor is over a residue.
-
-py3Dmol defaults to 500 ms, which reads as the scene ignoring the cursor. The
-handler only adds three shapes and a short stack of one-line labels, so there is
-no cost to hiding behind a delay.
-"""
+"""Delay before displaying a hover measurement, in milliseconds."""
 
 
 HOVER_TEMPLATE = """function(atom, viewer) {
@@ -186,41 +98,9 @@ HOVER_TEMPLATE = """function(atom, viewer) {
   ]);
   viewer.render();
 }"""
-"""The hover handler, with placeholders substituted rather than interpolated.
+"""Hover callback template with named placeholders.
 
-The body is JavaScript and is full of braces, so both percent formatting and
-str.format need every one of them escaped or doubled. Named placeholders keep
-the template readable as the code it actually is.
-
-Every row of the measurement is its own label. 3Dmol sizes a label from a single
-``measureText`` and paints it with a single ``fillText``, so a newline in the
-text is not a break but one more unrenderable character in a one-line box, and
-the rows arrive side by side however the newline is spelled. Stacking separate
-labels makes the breaks structural instead. The handles go on the atom in an
-array because the unhover callback is handed the atom and nothing else, and has
-to be able to take back every label this one added.
-
-The stack is pinned to the top left of the viewport with ``useScreen`` rather
-than anchored to the rung it describes. The pixel coordinates go in ``position``
-even in this mode, because ``useScreen`` only tells the sprite material to read
-that same field as an offset from the upper left instead of as a point in the
-scene; a spec carrying bare ``x`` and ``y`` keys silently falls back to the
-default position of ``{x: -10, y: 1, z: 1}``, which stacks every row on one spot
-off the left edge of the view. Anchored to the structure it sat on top
-of the two spheres it was labelling, most often the one at residue i, so reading
-the measurement hid the thing being measured. A fixed corner also removes the
-one clipping case an anchored stack had, where a rung near the top of the view
-pushed its own rows off the edge.
-
-Each row carries its own background box, sized to its own text, so the rows are
-padded out to the longest of them before they are drawn. The font is monospace,
-so that leaves every box the same width and the stack a straight edge instead of
-a ragged one.
-
-The angstrom sign is built with ``String.fromCharCode`` rather than written as
-an escape, because py3Dmol escapes the callback again when it embeds it in the
-page and a backslash escape arrives at the browser as its own literal
-characters.
+Stack monospace labels at the top left and retain their handles for cleanup.
 """
 
 
@@ -232,7 +112,7 @@ def _binder(path: Path) -> struc.AtomArray:
 
 
 def _rungs(path: Path) -> tuple[dict[int, dict[str, object]], int]:
-    """Every i to i + 4 Ca pair in the binder, with the geometry to draw it."""
+    """Pair binder Cα atoms four positions apart in coordinate order for display."""
     binder = _binder(path)
     alpha = binder[binder.atom_name == "CA"]
     coords, residues = alpha.coord, alpha.res_id
@@ -253,19 +133,7 @@ def _rungs(path: Path) -> tuple[dict[int, dict[str, object]], int]:
 
 
 def loss_term_scene(path: Path) -> py3Dmol.view:
-    """A hoverable binder, every residue showing what it adds to the term.
-
-    The view is centred and zoomed on the binder, and ``center`` is called as
-    well as ``zoomTo`` so that the point the scene rotates about is the middle
-    of the chain rather than wherever the model's coordinates happen to sit.
-    ``resize`` follows both, because the container takes its width from the
-    page and 3Dmol has to measure the canvas after the layout settles.
-
-    The binder is coloured by what each residue contributes to the term, so the
-    stretches the term charges for are visible before the cursor goes anywhere.
-    Hovering draws the pair being measured as two spheres and a dashed rod, and
-    writes the distance, whether the rung counts, and the share it contributes.
-    """
+    """Show binder contact contributions with hoverable distances and endpoint markers."""
     rungs, scored = _rungs(path)
     cutoff = steering.HELIX_PENALTY_CUTOFF_ANGSTROM
 

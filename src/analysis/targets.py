@@ -1,13 +1,4 @@
-"""The design targets, and the loss arms run against them.
-
-All five targets are the constructs used in the ESMFold2 preprint, taken
-verbatim from ``TARGET_SEQUENCES`` in the ESM cookbook binder-design tutorial.
-Every one is an exact substring of its UniProt entry, and the
-``construct_uniprot`` range below records where.
-
-This module imports nothing from Modal, so the notebook can read target
-metadata without a Modal account.
-"""
+"""Target constructs, structure metadata, and registered design conditions."""
 
 from __future__ import annotations
 from dataclasses import dataclass
@@ -20,13 +11,9 @@ from analysis.schedule import LossSchedule
 
 @dataclass(frozen=True)
 class TargetSpec:
-    """One design target.
+    """A sequence construct and its corresponding experimental structure metadata.
 
-    ``sequence_fasta`` is the cropped construct handed to sequence-only design.
-    ``structure_cif`` plus ``chain`` and ``auth_crop`` locate the same residues
-    in deposited coordinates, which is what the distogram-conditioned mode and
-    the secondary-structure ground truth both need. ``auth_crop`` is in author
-    numbering, which differs from UniProt numbering for 1YY9 and 3OSK.
+    ``auth_crop`` specifies inclusive author residue IDs for structure measurements.
     """
 
     key: str
@@ -141,12 +128,7 @@ TARGET_SPECS: dict[str, TargetSpec] = {
 }
 
 DEFAULT_TARGET = "pdl1_igv"
-"""The target a bare smoke test runs against.
-
-The shortest construct of the five at 115 residues, so it is the cheapest way
-to check that a deployment works end to end. It carries no other significance:
-every arm runs against every target.
-"""
+"""Default smoke-test target and the target used for onset and withdrawal scans."""
 
 
 @dataclass(frozen=True)

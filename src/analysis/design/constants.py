@@ -1,20 +1,4 @@
-"""Constants for the ported ESM cookbook binder-design code.
-
-Verbatim from ``cookbook/tutorials/binder_design.py`` at upstream commit
-``ba4d712``, lines 69-70 and 77-105.
-
-Three upstream inline comments are recorded here instead, because this
-repository does not use inline comments:
-
-- ``CYS_IDX`` is the cysteine index in the 20-dim amino-acid space.
-  ``TOKEN_IDS`` are offset by 2, for ``<pad>`` and ``-``.
-- ``BinderPromptStr`` contains amino-acid characters at fixed positions and
-  ``MUTABLE_TOKEN`` at mutable positions.
-- ``REUSE_ESMC`` significantly reduces VRAM usage. On the upstream config
-  ``target_name="cd45", binder_name="trastuzumab_framework_vhvl",
-  batch_size=1`` it takes VRAM from 51 GiB to 27 GiB, and allows batch sizes up
-  to 6.
-"""
+"""Vocabulary, loss weights, and defaults for ESMFold2 binder design."""
 
 from __future__ import annotations
 

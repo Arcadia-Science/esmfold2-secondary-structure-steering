@@ -15,12 +15,11 @@ Result = TypeVar("Result")
 def starmap(
     function: Callable[..., Result], tasks: Iterable[tuple], *, workers: int = DEFAULT_WORKERS
 ) -> Iterator[Result]:
-    """Apply an importable function to argument tuples, preserving input order.
+    """Yield ordered results from an importable function applied to argument tuples.
 
-    Worker functions must live in modules, not notebook cells or closures.
-    Explicit spawn avoids forking a running Jupyter kernel or native libraries.
-    ``workers=1`` runs locally. Pools are closed before returning to the caller;
-    exceptions propagate rather than triggering a silent serial fallback.
+    Use spawned workers, or run locally with ``workers=1``. Worker functions must
+    be importable from modules. Exhaust or close the iterator to release the pool;
+    worker exceptions propagate.
     """
     if workers == 1:
         yield from itertools.starmap(function, tasks)

@@ -1,15 +1,4 @@
-"""Behaviour of the secondary-structure steering terms, schedules and loss log.
-
-The terms are checked against geometry rather than against stored numbers.
-Every fixture here is built from explicit Ca coordinates: an ideal alpha helix
-at 2.3 A radius, 1.5 A rise and 100 degrees per residue, and an ideal extended
-strand at 3.3 A rise with a 1.9 A pleat. Those give the distances the terms are
-designed around, so a term that stops distinguishing a helix from a sheet fails
-here without anyone having to update an expected value.
-
-None of this needs ``esm`` or a GPU. That is the point of keeping
-:mod:`analysis.steering` outside :mod:`analysis.design`.
-"""
+"""Check steering proxies, schedules, and trace records using synthetic inputs."""
 
 from __future__ import annotations
 import importlib.util
@@ -61,7 +50,7 @@ def hairpin_coords(per_strand: int, gap: float = 4.8) -> np.ndarray:
 
 
 def distogram_from_coords(coords: np.ndarray, sharpness: float = 8.0) -> torch.Tensor:
-    """A sharply peaked distogram whose argmax bin is the true distance."""
+    """Build peaked distogram logits centred on pairwise coordinate distances."""
     bins = distance_bin_midpoints().numpy()
     distances = np.linalg.norm(coords[:, None, :] - coords[None, :, :], axis=-1)
     logits = -sharpness * (bins[None, None, :] - distances[..., None]) ** 2

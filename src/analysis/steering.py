@@ -1,37 +1,7 @@
-"""The secondary-structure steering loss terms.
+"""Differentiable secondary-structure proxies from binder distogram logits.
 
-This is the publication's own contribution, layered on the ported cookbook
-losses in :mod:`analysis.design.losses`. The cookbook's three structural terms
-are intra-binder contact, binder-target contact, and globularity. None of them
-says anything about secondary structure, which is why unsteered designs come
-out helix-rich: nothing in the objective asks for anything else.
-
-Every term reads the same object, the ESMFold2 distogram over Ca-Ca distances
-as 128 binned logits per residue pair, and returns one scalar per batch element
-that is differentiable back to the sequence logits. Every term is scoped to the
-binder block of the distogram, so no term can reshape the target.
-
-Two geometric facts do most of the work. In an alpha helix the i to i+4 Ca
-distance is about 6.2 A and the i to i+2 distance about 5.4 A. In a beta strand
-the i to i+2 distance is about 6.7 A, and the pairing partner sits 4.8 to 5.5 A
-away at a sequence separation that is long rather than local. So a helix reads
-as a short-range contact ladder, and a sheet as a long-range one with wider
-local spacing. The sheet terms use the i to i+2 spacing as a gate, and that
-gate is what stops a helix from scoring as a sheet.
-
-This module needs torch but not ``esm`` and not a GPU, which is deliberate:
-the shape of a loss term is a claim the notebook can check on its own, without
-the design stack behind it. ``bin_distance`` is passed in rather than derived
-for the same reason. The design loop supplies
-:func:`analysis.design.losses.get_mid_points`, the cookbook's own bin layout.
-
-When each term applies is a separate question, answered by
-:mod:`analysis.schedule`.
-
-Provenance: these terms were developed in a separate private pipeline and are
-transcribed here so this repository holds one implementation of the whole
-method. ``tests/test_steering_port.py`` checks that transcription numerically
-against that source when it is available.
+Each term returns one scalar per batch element. Schedules set their weights;
+DSSP composition is measured separately from saved coordinates.
 """
 
 from __future__ import annotations
@@ -65,34 +35,10 @@ def helix_mean_loss(
     cutoff: float = HELIX_PENALTY_CUTOFF_ANGSTROM,
     offset: int = HELIX_PENALTY_OFFSET,
 ) -> torch.Tensor:
-    """Mean i to i+4 contact probability over every scored binder residue.
+    """Mean contact probability between binder residues separated by ``offset``.
 
-    The same per-residue quantity ``helix_penalty`` pools, but pooled over the
-    whole binder instead of its twelve largest values. The loss is then the
-    expected fraction of binder residues sitting on a helical rung, which is
-    the quantity this publication reports, so the objective and the readout
-    describe the same thing.
-
-    ``helix_penalty`` cannot rank helical designs. Its top-12 mean reaches one
-    once roughly two dozen rungs saturate, and measured across the design grid
-    it takes the value 1.000 on every design above 20% helix regardless of
-    whether that design is a fifth helical or entirely so. Composed with the
-    clamp in ``helix_logcap`` this leaves no gradient at all on 97% of designs
-    carrying at least twelve helical residues. Averaging over every residue
-    removes both ceilings: the score is monotone in helix content across the
-    whole range, and every residue contributes the same constant derivative
-    rather than only the twelve that happen to be largest this step.
-
-    No log barrier and no clamp. The barrier existed to keep pushing as the
-    top-12 mean saturated near one, and this statistic does not: it tops out
-    near 0.85 on a fully helical binder. The cost of that is a smaller gradient
-    norm than the barrier supplied while it was live, which is a weight
-    question rather than a shape question. ``analysis.schedule`` sets the
-    weight.
-
-    The trailing ``offset`` residues have no i to i+4 partner and are excluded
-    from the mean rather than counted as non-helical, so the score does not
-    drift with binder length.
+    Use bins with midpoints below ``cutoff``. At the defaults, this is an i to i+4
+    helix proxy on a 0–1 scale. Exclude trailing residues without a partner.
     """
     contact_prob = contact_probability_matrix(distogram_logits, bin_distance, cutoff)
     binder = contact_prob[:, -binder_length:, -binder_length:]
@@ -139,13 +85,7 @@ def term(key: str) -> SteeringTermSpec:
 
 @dataclass(frozen=True)
 class SteeringLosses:
-    """Every steering term at one step, and the weighted sum of the active ones.
-
-    ``terms`` holds every registered term, including those carrying zero
-    weight. Those are computed under ``no_grad`` and exist to be logged: the
-    claim that the capped barrier runs out of gradient early is a claim about
-    unsteered runs, so the term has to be measured even where it is not applied.
-    """
+    """All registered terms, their configured weights, and the weighted total."""
 
     terms: dict[str, torch.Tensor]
     weights: dict[str, float]

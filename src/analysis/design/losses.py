@@ -1,8 +1,4 @@
-"""Distance-bin helpers and the structural design losses.
-
-Verbatim from ``cookbook/tutorials/binder_design.py`` at upstream commit
-``ba4d712``, lines 219-254 (bin and masking helpers) and 260-363 (losses).
-"""
+"""Distance-bin helpers and the cookbook structural design losses."""
 
 from __future__ import annotations
 
@@ -13,7 +9,7 @@ from analysis.design.constants import LOSS_WEIGHTS
 
 
 def get_mid_points() -> torch.Tensor:
-    """128 distance bin midpoints (2p-52 Angstrom range)."""
+    """Return 128 distance-bin midpoints spanning 1.5–54.5 Å."""
 
     boundaries = torch.linspace(2, 52.0, 127)
     lower = torch.tensor([1.0])
@@ -23,7 +19,10 @@ def get_mid_points() -> torch.Tensor:
 
 
 def binned_entropy(dgram: torch.Tensor, bin_distance: torch.Tensor, cutoff: float) -> torch.Tensor:
-    """Entropy of distance distribution within cutoff (design losses only)."""
+    """Weight full-distribution negative log probabilities by near-bin probabilities.
+
+    Renormalize the weights over bins with midpoints below ``cutoff``.
+    """
 
     bin_mask = ~(bin_distance < cutoff)
     masked_dgram = dgram - (1e7 * bin_mask)
@@ -57,9 +56,7 @@ def compute_contact_loss(
     chain_mask: torch.Tensor,
     binder_mask: torch.Tensor,
 ) -> torch.Tensor:
-    """Algorithm 12 Contact Losses.
-
-    Entropy-based contact loss with sequence separation constraint."""
+    """Pool near-bin losses over selected contacts and residues."""
 
     con_loss = binned_entropy(distogram_logits, bin_distance, cutoff)
     position = torch.arange(distogram_logits.shape[1])
@@ -114,9 +111,7 @@ def compute_inter_contact_loss(
 def compute_globularity_loss(
     distogram_logits: torch.Tensor, binder_length: int, bin_distance: torch.Tensor
 ) -> torch.Tensor:
-    """Algorithm 13 Globularity Loss.
-
-    Radius of gyration vs theoretical packed protein."""
+    """Apply ELU to a distogram radius-of-gyration estimate minus a length-based reference."""
 
     binder_disto = distogram_logits[:, -binder_length:, -binder_length:, :]
     n = binder_disto.shape[1]

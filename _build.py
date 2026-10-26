@@ -5,17 +5,7 @@
 # ]
 # ///
 
-"""
-This script gathers all of the files needed to build the publication.
-These files do not all exist in any single commit in the repository,
-because the publication needs to include versions of the `index.ipynb` notebook
-for each git tag.
-
-This script executes the following steps:
-- Copies the `index.ipynb` notebook from each tag to a `_freeze/index_v{tag}.ipynb` file.
-- Copies the `_freeze/index` directory from each tag to a `_freeze/index_v{tag}` directory.
-- Updates the `_quarto.yml` file to include a `version-control` item for each tag.
-"""
+"""Stage tagged notebooks and execution outputs for the publication build."""
 
 import argparse
 import shutil
@@ -82,10 +72,7 @@ def copy_freeze_directory(tag: str, dry_run: bool) -> None:
 
 
 def update_index_notebook_and_freeze_directory(tag: str, dry_run: bool) -> None:
-    """
-    Rename the most recent tagged version of the notebook and its freeze directory
-    to `index.ipynb` and `_freeze/index`, respectively.
-    """
+    """Replace the current notebook and freeze directory with the staged tag copies."""
     notebook_src = get_versioned_notebook_path(tag)
     notebook_dst = Path("index.ipynb")
 
@@ -135,13 +122,9 @@ def update_quarto_yaml(most_recent_tag: str, previous_tags: list[str], dry_run: 
 
 
 def main() -> None:
-    """
-    Entrypoint for the script.
+    """Stage releases and update the publication menu.
 
-    CLI args:
-        --dry-run: Print the actions that would be taken without actually taking them.
-            This is intended to be used when running this script locally during development,
-            as a way to preview the changes the script would make to the working directory.
+    ``--dry-run`` skips file copies and writes but still checks out each Git tag.
     """
     parser = argparse.ArgumentParser()
     parser.add_argument("--dry-run", action="store_true")

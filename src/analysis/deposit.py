@@ -1,10 +1,4 @@
-"""Preserve and distribute scientific inputs separately from source and measurements.
-
-The reference archive contains frozen search results, entry metadata and CIFs.
-Campaign archives contain model structures, scores, traces and protocols.
-Existing local inputs are used directly. Missing inputs are fetched from the
-published archives.
-"""
+"""Package, fetch, and extract preserved reference and campaign inputs."""
 
 from __future__ import annotations
 import json
@@ -24,7 +18,7 @@ DESIGN_ARCHIVE = "design-campaigns.zip"
 
 
 def _download_from_s3(key: str, destination: Path) -> bool:
-    """Unsigned public read. False if the object is not there or S3 is down."""
+    """Download a public S3 object; return False on handled download errors."""
     import boto3
     from botocore import UNSIGNED
     from botocore.config import Config
@@ -60,10 +54,10 @@ class DataArtifact:
         return self.archive_path.is_file()
 
     def fetch(self) -> Path:
-        """Download and extract, unless the archive is already here.
+        """Extract the archive, downloading it first if absent.
 
-        The archive is written to its final name only after extraction
-        succeeds, so a half-finished download never looks like a complete one.
+        Extraction can overwrite local members. A download receives its final archive
+        name only after successful extraction.
         """
         if self.is_fetched():
             with zipfile.ZipFile(self.archive_path) as archive:
@@ -92,11 +86,9 @@ class DataArtifact:
         return self.archive_path
 
     def package(self, members: list[Path]) -> Path:
-        """Zip ``members`` into the archive, for uploading to the deposit.
+        """Archive members relative to ``extract_dir`` for later extraction.
 
-        Paths are stored relative to ``extract_dir``, so extracting the result
-        reproduces the layout the notebook expects. Already-compressed members
-        are stored rather than deflated, which is most of what goes in here.
+        Store GZIP, ZIP, and Parquet files without further compression.
         """
         missing = [p for p in members if not p.is_file()]
         if missing:
@@ -132,12 +124,7 @@ DESIGN_TABLES = DataArtifact(
 
 
 def reference_members() -> list[Path]:
-    """What the reference archive holds: the frozen search results and structures.
-
-    Deliberately not the composition table. The table is what the notebook
-    derives from these, and depositing it too would let a reader load a result
-    without ever running the measurement that produced it.
-    """
+    """List frozen reference queries, search hits, metadata, and compressed CIFs."""
     from analysis import rcsb, reference
 
     members = [

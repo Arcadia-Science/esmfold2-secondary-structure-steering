@@ -1,9 +1,4 @@
-"""The ESMC pseudo-perplexity sequence regularization loss.
-
-Verbatim from ``cookbook/tutorials/binder_design.py`` at upstream commit
-``ba4d712``, lines 688-809. Two ``# pyright: ignore`` pragmas were dropped;
-this repository does not run pyright.
-"""
+"""ESMC sequence regularization using sampled masks and soft sequence targets."""
 
 from __future__ import annotations
 import math

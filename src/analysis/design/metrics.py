@@ -1,12 +1,4 @@
-"""The distogram ipTM proxy and its antibody CDR variant.
-
-Verbatim from ``cookbook/tutorials/binder_design.py`` at upstream commit
-``ba4d712``, lines 369-473.
-
-``_is_antibody_sequence`` and ``_cdr_indices`` import ``abnumber`` inside the
-function body, as upstream does, so the rest of this module works without
-ANARCI installed.
-"""
+"""Distogram entropy proxies for binding confidence, including antibody CDRs."""
 
 from __future__ import annotations
 import math
@@ -70,13 +62,10 @@ def compute_distogram_iptm_proxy(
     binder_sequence: str,
     is_antibody: bool,
 ) -> dict[str, float]:
-    """Algorithm 15 Distogram ipTM Proxy.
+    """Return full-binder and CDR distogram confidence proxies for target|binder.
 
-    Distogram iptm proxy for a target|binder complex (binder at suffix).
-
-    Returns distogram_iptm_proxy for all designs and
-    cdr_distogram_iptm_proxy when the binder can be annotated as an
-    antibody; otherwise the CDR score is NaN.
+    Use batch element 0 for batched inputs. The CDR proxy is NaN when
+    ``is_antibody`` is false; otherwise annotate CDRs with ANARCI.
     """
     if distogram_logits.ndim == 4:
         distogram_logits = distogram_logits[0]

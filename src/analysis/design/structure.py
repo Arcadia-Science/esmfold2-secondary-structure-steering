@@ -1,11 +1,4 @@
-"""Turning model output into a biotite AtomArray and an ESM ProteinComplex.
-
-Verbatim from ``cookbook/tutorials/binder_design.py`` at upstream commit
-``ba4d712``, lines 599-682.
-
-This is not :mod:`analysis.secondary_structure`, which measures composition
-from finished coordinates. This module only builds coordinates.
-"""
+"""Convert ESMFold2 output into Biotite atoms and an ESM ProteinComplex."""
 
 from __future__ import annotations
 import string
@@ -77,7 +70,7 @@ def to_atom_array(
 
 
 def build_complex(inputs: dict[str, torch.Tensor], output: dict[str, Any]) -> ProteinComplex:
-    """Build ProteinComplex from model output."""
+    """Build a predicted complex from batch element 0, with optional atom pLDDT B factors."""
     plddt_per_atom = output.get("plddt_per_atom")
     if plddt_per_atom is not None:
         plddt_per_atom = plddt_per_atom[0].cpu().numpy() * PLDDT_B_FACTOR_SCALE

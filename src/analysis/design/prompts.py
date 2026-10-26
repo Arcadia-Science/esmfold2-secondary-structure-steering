@@ -1,26 +1,4 @@
-"""Binder prompt factories and the upstream preset target sequences.
-
-Verbatim from ``cookbook/tutorials/binder_design.py`` at upstream commit
-``ba4d712``, lines 111-127 (``PromptFactory``), 131-151
-(``BINDER_PROMPT_FACTORIES``) and 154-165 (``TARGET_SEQUENCES``).
-
-``PromptFactory`` field notes, from upstream inline comments:
-
-- ``template`` is a string with format fields.
-- ``length_ranges`` maps a field name to a length range.
-- ``is_antibody`` is used to set the LM loss weight for antibodies.
-
-``TARGET_SEQUENCES`` holds upstream's five preset targets. These are separate
-from :mod:`analysis.targets`, which holds this publication's own targets and
-reads their sequences from ``data/targets``. Each preset is an exact substring
-of its UniProt entry, per the upstream inline comments:
-
-- ``cd45``: P08575, residues 389-574.
-- ``ctla4``: P16410, residues 37-155.
-- ``egfr``: P00533, residues 333-524.
-- ``pd-l1``: Q9NZQ7, residues 17-132.
-- ``pdgfr``: P09619, residues 125-312.
-"""
+"""Binder prompt factories and preset target sequences from the ESM cookbook."""
 
 from __future__ import annotations
 import random

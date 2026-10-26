@@ -1,10 +1,4 @@
-"""The reference-set query, and the parts of the build that need no network.
-
-The build itself downloads a few thousand structures, so it is not run here.
-What is checked is the part that decides *what* gets built: the query body, the
-release-date pin that makes a rebuild in a year return the same entries, and
-the row assembly and keyword flags that turn search hits into a table.
-"""
+"""Check reference query constraints, pair metadata, and selection flags offline."""
 
 from __future__ import annotations
 
@@ -17,7 +11,7 @@ def _terms(body: dict) -> dict[str, dict]:
 
 
 def test_the_query_is_pinned_to_a_release_date() -> None:
-    """Without this the set grows every time anyone rebuilds it."""
+    """Check that the live query excludes entries released after the snapshot."""
     terms = _terms(rcsb.search_body(grouped=True))
     pin = terms["rcsb_accession_info.initial_release_date"]
     assert pin["operator"] == "less_or_equal"

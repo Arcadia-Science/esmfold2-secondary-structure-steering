@@ -1,20 +1,6 @@
-"""When each steering loss term applies, and how hard.
+"""Piecewise-constant steering weights and optional base structural loss onset.
 
-A schedule is a list of waypoints. Each waypoint names the weights that take
-effect at its step, and they hold until a later waypoint changes them; a name a
-later waypoint omits keeps the value it already had. That is enough for both
-shapes this publication uses: a constant weight for the whole run, and a burst
-that starts strong and then drops to a maintenance level.
-
-Timing is not cosmetic. ``helix_logcap`` is a log barrier clamped at 2.0, so it
-stops producing gradient once the top-12 i to i+4 contact probability passes
-1 - exp(-2), which is 0.8647. Unsteered runs cross that threshold within a
-handful of steps, so a weight that arrives late arrives where the term has no
-gradient left to give. The burst arm exists to ask whether front-loading the
-weight buys anything the constant arm cannot.
-
-The terms themselves, and the arithmetic behind them, are in
-:mod:`analysis.steering`.
+Each waypoint updates the named terms; omitted terms retain their prior weight.
 """
 
 from __future__ import annotations
@@ -25,7 +11,7 @@ import torch
 
 @dataclass(frozen=True)
 class Waypoint:
-    """Weights that take effect at ``step`` and hold until the next waypoint."""
+    """Weight updates that take effect at ``step``."""
 
     step: int
     weights: dict[str, float]
@@ -116,14 +102,9 @@ def constant(key: str, term_key: str, weight: float) -> LossSchedule:
 
 
 def released(key: str, term_key: str, weight: float, release_step: int) -> LossSchedule:
-    """One term at one weight until ``release_step``, then nothing.
+    """Apply one steering weight from step 0 until ``release_step``, exclusively.
 
-    The complement of :func:`delayed`. A delayed arm asks whether a weight can
-    still move a fold the unsteered objective has committed; a released arm
-    asks whether a fold the weight has already produced survives once the
-    weight is gone, and the rest of the objective is free to pull the design
-    back. Released at step 0 is the unsteered arm and never released is the
-    constant arm, so the two ends of the scan are campaigns that already exist.
+    ``release_step`` must be positive.
     """
     return LossSchedule(
         key=key,
@@ -135,15 +116,9 @@ def released(key: str, term_key: str, weight: float, release_step: int) -> LossS
 
 
 def delayed(key: str, term_key: str, weight: float, onset_step: int) -> LossSchedule:
-    """No steering until ``onset_step``, then one term at one weight.
+    """Apply one steering weight from ``onset_step`` onward.
 
-    Up to the onset this is the unsteered objective, step for step, which is
-    what makes it a test rather than another weight: the design loop draws all
-    of its randomness from the seed and the step index and none of it from the
-    trajectory, so a delayed arm and an unsteered arm run on the same seed
-    share their first ``onset_step`` steps exactly. What happens after the
-    onset is therefore the weight acting on a design the unsteered objective
-    has already committed, rather than on an initialization.
+    ``onset_step`` must be positive; earlier steps have no steering.
     """
     return LossSchedule(
         key=key,

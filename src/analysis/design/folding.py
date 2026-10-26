@@ -1,13 +1,4 @@
-"""Input preparation and the ESMFold2 forward pass that yields the distogram.
-
-Verbatim from ``cookbook/tutorials/binder_design.py`` at upstream commit
-``ba4d712``, lines 479-596.
-
-``fold_and_get_distogram`` takes the argmax of the padded soft design to get the
-designed sequence string, which is the one upstream inline comment dropped from
-this file. It calls ``.cuda()`` on the stacked inputs, so this module requires a
-GPU.
-"""
+"""Prepare soft sequence inputs and run the ESMFold2 forward pass on CUDA."""
 
 from __future__ import annotations
 from functools import cache

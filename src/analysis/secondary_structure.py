@@ -1,15 +1,4 @@
-"""Three-state secondary structure, measured one way everywhere.
-
-Every composition number in this publication comes through this module, so
-designs, natural reference chains, and the design targets are all measured
-identically: pydssp's Kabsch-Sander hydrogen-bond assignment, collapsed to
-helix, sheet and coil, with proline excluded as a backbone amide donor.
-
-The proline donor mask matters. Passing residue ids where residue names are
-expected silently disables it, which shifts sheet fraction by up to about two
-percentage points on beta-rich chains. :func:`backbone_residues` therefore
-returns a dataclass rather than a tuple, so the arguments cannot be swapped.
-"""
+"""Measure helix, sheet, and coil with pydssp, excluding proline as an amide donor."""
 
 from __future__ import annotations
 from dataclasses import dataclass
@@ -26,7 +15,7 @@ MIN_RESIDUES = 8
 
 @dataclass(frozen=True)
 class Backbone:
-    """Complete N, CA, C, O backbone of one chain, residue-ordered."""
+    """Complete N, CA, C, O coordinates and metadata in input residue order."""
 
     coords: np.ndarray
     res_ids: np.ndarray
@@ -101,12 +90,10 @@ def assign(backbone: Backbone) -> np.ndarray:
 
 
 def composition(backbone: Backbone) -> Composition:
-    """Collapse per-residue labels to fractions and counts.
+    """Return three-state fractions, counts, and the largest residue-number increment.
 
-    ``max_residue_gap`` is the largest jump in author residue numbering across
-    the labelled residues. It is 1 for a chain with no break, and larger where
-    the model is missing residues, which is how an experimental structure
-    advertises disorder.
+    ``max_residue_gap`` uses successive author residue IDs; it does not account
+    for insertion codes or establish why coordinates are missing.
     """
     labels = assign(backbone)
     gaps = np.diff(backbone.res_ids)

@@ -1,66 +1,4 @@
-"""The gradient-guided binder design loop, and the driver that loads its models.
-
-Verbatim from ``cookbook/tutorials/binder_design.py`` at upstream commit
-``ba4d712``, lines 60-63 (module setup), 815-825
-(``normalized_gradient_tensor``), 828-1056 (``design_binder``) and 1098-1176
-(``ESMFold2Design``).
-
-``design_binder`` runs in four phases, which upstream marked with inline
-comments: setup, the optimization loop over ``STEPS`` on a cosine temperature
-schedule, and scoring of the best sequence by every loaded critic.
-
-``steps`` is a parameter defaulting to ``STEPS``. Upstream reads the module
-global directly and this port used to as well, with callers rebinding
-``analysis.design.loop.STEPS`` before calling. That worked only because Modal
-runs one input per container and because the caller always passed a value, so
-every call reassigned it; it also left ``analysis.design.constants.STEPS`` and
-the re-export on :mod:`analysis.design` holding the original number while the
-loop used another. A parameter has none of those hazards.
-
-``design_binder`` is the one ported definition this repository extends rather
-than reproduces. Four upstream statements change: the signature gains two
-keyword parameters whose defaults reproduce upstream behaviour, the return
-gains the loss log, the inversion-model draw is split in two so the chosen
-replicate can be named in that log, and the structural loss gains the steering
-total. Everything else is inserted. ``tests/test_design_port.py`` enumerates
-that divergence statement by statement and fails if it grows.
-
-Five things are added. Four sit inside the optimization step:
-
-1. The secondary-structure steering terms from :mod:`analysis.steering`, at the
-   weights :mod:`analysis.schedule` sets for that step, added to the structural
-   loss before the gradient is taken. With the default ``VANILLA`` schedule
-   every weight is zero and the objective is exactly the cookbook's.
-2. The distogram ipTM proxy, computed every step rather than only on the
-   confidence steps, so the interface cost of a steering weight is visible while
-   it is being paid.
-3. A per-step loss log, :class:`analysis.loss_trace.StepRecord`, which records
-   every loss, every weight in force, the binding readout and the sequence
-   entropy. Every registered steering term is measured every step, including
-   the ones carrying no weight, because the claim that the capped barrier runs
-   out of gradient early is a claim about unsteered runs.
-
-A fifth is optional and off by default: when ``log_step_structures`` is set,
-every step's predicted complex is built and kept as PDB text, so a run can be
-watched as a trajectory rather than read as a curve. The coordinates are already
-computed on every step, since the structure module has to run for the distogram
-to exist, and the cookbook discards them until the critics. Pair it with
-``sampling_steps`` raised to ``confidence_sampling_steps``, or the trajectory is
-sampled one way for most of the run and another way at the end.
-
-The next is in the critic scoring that follows the loop: per-chain pLDDT,
-via :func:`analysis.confidence.chain_plddt`. The cookbook builds the complex
-with per-atom pLDDT in its B-factor column but reports no per-chain number, and
-the viability rule this publication uses needs binder pLDDT specifically,
-because a disordered binder on a confident target still scores well on the
-complex mean.
-
-The log describes batch element 0 throughout, losses included, rather than
-mixing per-element sequences with batch-mean losses. This publication runs
-``batch_size=1``, where the distinction does not arise; at larger batch sizes
-the log follows one design rather than summarising all of them. The in-memory
-``trajectory`` is unaffected and still holds the full batch.
-"""
+"""Gradient-guided binder design with steering, critic scoring, and diagnostics."""
 
 from __future__ import annotations
 import logging
@@ -117,33 +55,18 @@ logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
 SAMPLING_STEPS = 1
-"""Solver steps the structure module takes on an ordinary optimization step.
-
-The cookbook takes one. A single step is enough to give the distogram the
-gradient is read from, and it is the cheapest thing that does, which is what
-matters when the step runs 150 times. Raising it buys a better sampled set of
-coordinates rather than a better distogram, so it is only worth paying for when
-the coordinates themselves are wanted.
-"""
+"""Default solver steps for optimization folds without confidence scoring."""
 
 CONFIDENCE_SAMPLING_STEPS = 50
-"""Solver steps on a confidence step, where a real ipTM is computed.
-
-Confidence needs coordinates rather than a distogram, so the cookbook spends
-fifty steps on the tail of the run where the temperature has collapsed and the
-sequence has stopped moving. A trajectory logged across the whole run therefore
-changes sampling budget partway through unless this and ``SAMPLING_STEPS`` are
-set to the same value.
-"""
+"""Default solver steps for optimization folds with confidence scoring."""
 
 TIMING_KEYS = ("time", "peak_allocated_gib", "peak_reserved_gib")
 
 
 def normalized_gradient_tensor(grad: torch.Tensor, gradient_mask: torch.Tensor) -> torch.Tensor:
-    """Rescale a masked gradient to unit norm per effective position.
+    """Scale each masked batch gradient to approximately sqrt(effective positions) norm.
 
-    ``index_has_nonzero_grad`` is ``(B, L)``; ``eff_L`` and ``grad_norm`` are
-    ``(B,)``.
+    An effective position has a nonzero masked gradient.
     """
     masked_grad = grad * gradient_mask
     index_has_nonzero_grad = torch.square(masked_grad).sum(-1) > 0
@@ -181,28 +104,21 @@ def design_binder(
     tuple[loss_trace.StepRecord, ...],
     tuple[str, ...],
 ]:
-    """
-    Algorithm 11 Gradient-Guided Binder Sequence Optimization.
+    """Optimize one binder chain against one target chain on CUDA.
 
-    Run the full optimization loop.
-    Returns dict with designed_sequence, complex, and trajectory.
+    Return sequences, the batch loss trajectory, critic records, the loss trace,
+    and optional per-step PDB strings, in that order. The loss trace and PDB
+    snapshots describe batch element 0; the trajectory retains the full batch.
 
-    Every critic is folded once on the best designed sequence via HF ESMFold2.
-    Hero critics expose iPTM; scaling critics contribute distogram scores only.
-    ``distogram_binding_confidence`` / ``cdr_distogram_binding_confidence`` come
-    from the distogram in all cases.
+    ``steps`` sets the annealing horizon. A shorter ``stop_after_steps`` returns
+    the last folded sequences and skips critic evaluation. Otherwise, select
+    sequences by the highest optimization-step ipTM and evaluate each critic.
 
-    ``trajectory`` maps a step index to ``{loss_name: [B] tensor on CPU,
-    metric_name: float}``.
-
-    ``schedule`` sets the steering weight each term carries at each step, and
-    defaults to no steering at all. ``trace_path`` is where the per-step loss
-    log is appended as JSON lines; the log is returned either way, so a path is
-    only needed when a run has to survive its own process.
-
-    Only single binder and target chains are supported by default. To support
-    the multi-chain case, remove the two ``"|" not in`` asserts below and check
-    that the losses and the selection metrics are appropriate for it.
+    ``schedule`` controls steering and base structural loss timing. Append trace
+    rows to ``trace_path`` when supplied. ``log_step_structures`` enables PDB
+    snapshots; ``snapshot_sampling_steps`` resamples saved soft states after
+    optimization. Otherwise snapshots use the optimization fold's coordinates.
+    Ordinary and confidence folds use their respective sampling-step budgets.
     """
     # Truncate execution without compressing the annealing schedule.
     run_steps = steps if stop_after_steps is None else stop_after_steps

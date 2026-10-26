@@ -1,28 +1,7 @@
-"""The per-step loss log for one design run.
+"""Record per-step losses, steering weights, sequence state, and binding proxies.
 
-The trajectory the cookbook loop keeps is a dict of tensors in memory. It
-answers "what were the losses" but not "what was the objective doing to this
-design at step 40", because it carries no weights, no binding readout, and no
-sequence state. This module records one flat row per optimization step: every
-loss term, the weight each steering term carried at that step, the binding
-readout, the sequence entropy, and the wall time.
-
-The binding readout needs a note. The cookbook asks ESMFold2 for confidence,
-and so for ipTM, only on the steps where the temperature has annealed below
-0.05, which is a handful at the very end of a run. So ``iptm`` is null in almost
-every row, and that is upstream behaviour rather than an omission here: a
-confidence pass costs 50 sampling steps instead of one.
-
-The per-step readout is instead the distogram ipTM proxy, Algorithm 15 of the
-cookbook, which maps the entropy of the binder-to-target distance distribution
-onto [0, 1] without a confidence head. It is not ipTM and should not be quoted
-as one. What it is good for is timing: it is available at every step, so the
-cost a steering weight imposes on the interface becomes visible while it is
-being paid rather than only in the final score.
-
-Rows are appended and flushed one at a time, so a run that dies at step 90
-still leaves 90 usable rows. Column names carry their units, and the stored JSON
-keys are those same names, so a log needs no renaming to be read.
+Rows use unit-labelled columns. Optimization-step ipTM is available only on
+confidence steps; the distogram proxy is a separate readout.
 """
 
 from __future__ import annotations
@@ -69,14 +48,7 @@ def weight_column(name: str) -> str:
 
 
 def sequence_entropy_bits(design_probs: torch.Tensor) -> float:
-    """Mean per-residue entropy of the soft sequence, for batch element 0.
-
-    A design that has collapsed onto one amino acid per position sits near
-    zero. A uniform distribution over the 20 amino acids sits at log2(20), which
-    is 4.32 bits. Reading this alongside the losses is how a steering weight
-    that is winning by collapsing the sequence rather than by changing the fold
-    gives itself away.
-    """
+    """Return mean per-residue soft-sequence entropy in bits for batch element 0."""
     probs = design_probs[0].clamp(min=1e-8)
     return float(-(probs * probs.log2()).sum(dim=-1).mean().detach().cpu())
 

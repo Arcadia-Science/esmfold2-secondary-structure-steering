@@ -1,27 +1,4 @@
-"""Per-chain confidence, read from ESMFold2's own per-residue output.
-
-The viability rule this publication uses needs binder pLDDT, and a complex-wide
-mean will not do. A design whose binder is a disordered tail attached to a
-confidently predicted target still scores well on the complex mean, which is
-exactly the failure the rule is meant to catch. So pLDDT is split by chain.
-
-The model returns ``plddt`` as one value per residue, shaped
-``(batch, residues)`` on a 0 to 1 scale, alongside a separate
-``plddt_per_atom`` that :func:`analysis.design.structure.build_complex` writes
-into the B-factor column at 0 to 100. Both describe the same prediction, but a
-per-atom mean and a per-residue mean are not the same number, because residues
-differ in atom count. This module reads the per-residue tensor, which is what
-produced the figures quoted in this publication, rather than parsing the
-B-factors back out of the PDB.
-
-The chain split is positional and needs no chain labels: the design loop folds
-``target|binder`` in that order, so the binder is the suffix. Padding, when
-there is any, sits past the end of both and is excluded by slicing to the
-sequence lengths.
-
-This module needs torch but not ``esm``, so the arithmetic is testable without
-the design stack.
-"""
+"""Split per-residue model pLDDT into target, binder, and complex means."""
 
 from __future__ import annotations
 from dataclasses import dataclass
@@ -43,12 +20,10 @@ class ChainPlddt:
 def chain_plddt(
     plddt: torch.Tensor, target_length: int, binder_length: int, batch_index: int = 0
 ) -> ChainPlddt:
-    """Split a per-residue pLDDT tensor into complex, target and binder means.
+    """Return complex, target, and binder mean pLDDT on a 0–100 scale.
 
-    ``plddt`` is ``output["plddt"]`` from the fold, shaped
-    ``(batch, residues)`` and scaled 0 to 1. The returned values are scaled to
-    0 to 100, which is the scale the B-factor column and every published
-    pLDDT threshold use.
+    Input shape is (batch, residues), scaled 0–1, with target then binder.
+    Ignore padding beyond the supplied chain lengths.
     """
     if plddt.ndim != 2:
         raise ValueError("Expected one value per residue in a (batch, residues) tensor")

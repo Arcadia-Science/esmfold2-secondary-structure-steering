@@ -1,11 +1,4 @@
-"""Splitting ESMFold2's per-residue pLDDT by chain, and the viability rule.
-
-The point of the split is the viability rule: a binder that is a disordered
-tail on a confidently predicted target scores well on the complex mean and
-badly on its own, and it is the second number the rule needs. So the tests
-below are mostly about the split landing on the right residues and about the
-scale being asserted rather than inferred.
-"""
+"""Check per-chain pLDDT means, input validation, and screening thresholds."""
 
 from __future__ import annotations
 
@@ -46,7 +39,7 @@ def test_the_complex_mean_is_residue_weighted_not_chain_weighted() -> None:
 
 
 def test_the_binder_is_the_suffix_not_the_prefix() -> None:
-    """Reversing the chains has to change the answer, or the slice is wrong."""
+    """Check that target and binder means use their respective chain slices."""
     forward = confidence.chain_plddt(two_chain_plddt(0.9, 0.5), TARGET_LENGTH, BINDER_LENGTH)
     assert forward.target_plddt > forward.binder_plddt
 

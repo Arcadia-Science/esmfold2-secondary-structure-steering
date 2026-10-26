@@ -1,13 +1,4 @@
-"""Routing a returned design payload into the per-design table.
-
-The bug this guards against cost a collected campaign. A design payload carried
-the whole weight schedule, and the vanilla schedule's waypoint holds an empty
-weights mapping, which parquet cannot store: a struct needs at least one field.
-The failure is nastier than it sounds because of where it hides. Only an arm
-that sets no weights produces an empty mapping, so vanilla breaks and every
-steered arm writes fine, which is the opposite of the order anyone would test
-in.
-"""
+"""Check payload routing and reject empty containers in campaign score rows."""
 
 from __future__ import annotations
 import re
@@ -19,7 +10,7 @@ from analysis.results import CampaignOutput
 
 
 def a_payload() -> dict[str, object]:
-    """The shape analysis.modal_app.design returns, trimmed to what matters."""
+    """A minimal campaign payload with scores, a schedule, trace, and PDB text."""
     return {
         "steps": 150,
         "target": "pdl1_igv",

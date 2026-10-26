@@ -28,12 +28,7 @@ GRAPHQL_URL = "https://data.rcsb.org/graphql"
 FILE_URL = "https://files.rcsb.org/download/{pdb_id}.cif.gz"
 
 SNAPSHOT_RELEASE_DATE = "2026-09-02"
-"""Initial-release ceiling for the query.
-
-Set to the newest release in the deposited table, so re-running reproduces the
-same candidate entries rather than picking up everything released since.
-Raising it is a deliberate act that changes the reference set.
-"""
+"""Initial-release ceiling; frozen search hits preserve cluster representatives."""
 
 MIN_LENGTH_RESIDUES = 60
 MAX_LENGTH_RESIDUES = 200
@@ -317,13 +312,7 @@ def fetch_entries(pdb_ids: list[str], progress: bool = True) -> dict[str, EntryM
 
 
 def download(pdb_id: str) -> Path:
-    """Fetch one mmCIF into the cache, or return the cached copy.
-
-    Files are kept gzipped as served. Measured on a representative entry the
-    gzip is 3.7 times smaller than the text mmCIF and parses to identical
-    composition, which turns a 1.5 GB download for the whole set into roughly
-    400 MB.
-    """
+    """Fetch a gzipped CIF, or reuse a cached file larger than 500 bytes."""
     CIF_CACHE.mkdir(parents=True, exist_ok=True)
     destination = CIF_CACHE / f"{pdb_id.upper()}.cif.gz"
     if destination.is_file() and destination.stat().st_size > 500:
@@ -373,7 +362,7 @@ def _protein(cif_path: Path) -> struc.AtomArray:
 
 
 def interface(protein: struc.AtomArray, binder_chain: str, target_chain: str) -> tuple[int, float]:
-    """Heavy-atom contacts within the cutoff, and buried surface area."""
+    """Count atom pairs within the contact cutoff and return buried surface area."""
     binder = protein[protein.chain_id == binder_chain]
     target = protein[protein.chain_id == target_chain]
     distances = np.linalg.norm(binder.coord[:, None, :] - target.coord[None, :, :], axis=-1)

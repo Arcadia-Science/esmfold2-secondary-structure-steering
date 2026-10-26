@@ -1,9 +1,4 @@
-"""Sequence encodings for the binder prompt and the target.
-
-Verbatim from ``cookbook/tutorials/binder_design.py`` at upstream commit
-``ba4d712``, lines 172-216. Three upstream inline comments were dropped; the
-docstrings below already state what they said.
-"""
+"""Sequence encodings and mutation masks for binder design."""
 
 from __future__ import annotations
 
@@ -15,11 +10,10 @@ from analysis.design.constants import AA_DIMS, CYS_IDX, MUTABLE_TOKEN, TOKEN_IDS
 
 
 def build_initial_soft_sequence_logits(sequence: str, batch_size: int) -> torch.Tensor:
-    """
-    Initialize logits with:
-    - High confidence (10.0) for fixed positions
-    - Random (~0) for mutable positions
-    - -1e6 for cysteines
+    """Initialize trainable amino-acid logits for a batch of binder prompts.
+
+    Fixed residues receive a logit of 10 for their amino acid. Mutable positions
+    receive small random logits, with cysteine set to −1e6.
     """
     if all(aa == MUTABLE_TOKEN for aa in sequence):
         logits = 0.01 * torch.randn([batch_size, len(sequence), AA_DIMS])
