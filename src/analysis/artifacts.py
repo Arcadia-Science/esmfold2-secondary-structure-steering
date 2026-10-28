@@ -1,6 +1,7 @@
 """Inspect and load preserved campaign artifacts without running design models."""
 
 from __future__ import annotations
+import json
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -8,6 +9,42 @@ import pandas as pd
 
 from analysis import deposit, paths
 from analysis.targets import ARM_SPECS, TARGET_SPECS
+
+
+def expected_seeds(target_key: str, arm: str) -> set[int]:
+    """Read the requested seed coverage, including seeds not yet submitted."""
+    protocol = json.loads(paths.campaign_protocol(target_key, arm).read_text())
+    count = protocol["n_seeds"]
+    if type(count) is not int or count < 1:
+        raise ValueError("Campaign n_seeds must be a positive integer")
+    return set(range(count))
+
+
+def is_complete(target_key: str, arm: str) -> bool:
+    """Require every requested seed's scores, structure, and trace locally.
+
+    Older archives need no collection summary: their protocol and artifacts
+    establish coverage. Availability of a partial campaign is a separate check.
+    """
+    directory = paths.campaign_dir(target_key, arm)
+    if (directory / ".collecting").exists():
+        return False
+    try:
+        expected = expected_seeds(target_key, arm)
+        summary_path = directory / "collection.json"
+        if summary_path.exists() and json.loads(summary_path.read_text()).get("partial", True):
+            return False
+        scores = pd.read_parquet(paths.campaign_results(target_key, arm), columns=["seed"])
+        trace = pd.read_parquet(paths.campaign_trace(target_key, arm), columns=["seed"])
+        structures = {p.name for p in paths.campaign_complexes(target_key, arm).glob("seed*.pdb")}
+        return (
+            not scores.seed.duplicated().any()
+            and set(scores.seed) == expected
+            and set(trace.seed) == expected
+            and structures == {f"seed{seed:02d}.pdb" for seed in expected}
+        )
+    except (OSError, ValueError, KeyError, TypeError):
+        return False
 
 
 @dataclass(frozen=True)
@@ -68,6 +105,7 @@ def status_table(
                     "predicted complexes (count)": s.n_complexes,
                     "loss log present (bool)": s.has_trace,
                     "analysable (bool)": s.is_analysable,
+                    "complete (bool)": is_complete(key, name),
                 }
             )
     return pd.DataFrame(rows)

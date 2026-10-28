@@ -159,3 +159,224 @@ def test_main_campaign_uses_incremental_submission_and_keeps_existing_calls(tmp_
     assert all(call["arm"] == "vanilla" and call["target_sequence"] for call in calls)
     with pytest.raises(ValueError, match="settings differ"):
         campaign.spawn_campaign("pdl1_igv", "vanilla", n_seeds=3)
+
+
+@pytest.fixture
+def collection_setup(tmp_path, monkeypatch):
+    import json
+    from types import SimpleNamespace
+
+    from analysis import composition, paths
+
+    monkeypatch.setattr(paths, "CAMPAIGNS", tmp_path)
+    monkeypatch.setattr(
+        composition.secondary_structure,
+        "binder_composition",
+        lambda path: SimpleNamespace(
+            n_residues=100, helix_fraction=0.2, sheet_fraction=0.5, coil_fraction=0.3
+        ),
+    )
+
+    def prepare(target="pdl1_igv", arm="vanilla", count=2, submitted=None):
+        directory = paths.campaign_dir(target, arm)
+        directory.mkdir(parents=True, exist_ok=True)
+        paths.campaign_protocol(target, arm).write_text(json.dumps({"n_seeds": count}))
+        seeds = list(range(count)) if submitted is None else submitted
+        frame = pd.DataFrame({"seed": seeds, "call_id": [f"call-{s}" for s in seeds]})
+        frame.to_csv(paths.campaign_manifest(target, arm), index=False)
+        return directory
+
+    return prepare
+
+
+def collection_calls(monkeypatch, states):
+    from types import SimpleNamespace
+
+    def completed(manifest):
+        for row in manifest.itertuples():
+            state = states[row.seed]
+            if state:
+                yield row, None, state
+            else:
+                payload = a_payload()
+                payload["step_trace"] = [{"seed": row.seed, "step (index)": 0}]
+                yield SimpleNamespace(seed=row.seed), payload, ""
+
+    monkeypatch.setattr(campaign, "completed_jobs", completed)
+
+
+def snapshot(directory):
+    return {p.relative_to(directory): p.read_bytes() for p in directory.rglob("*") if p.is_file()}
+
+
+def test_partial_collection_resumes_without_force(collection_setup, monkeypatch):
+    import json
+
+    from analysis import artifacts
+
+    directory = collection_setup()
+    collection_calls(monkeypatch, {0: "", 1: "pending"})
+    campaign.collect(target="pdl1_igv", arm="vanilla", force=False)
+    assert artifacts.status("pdl1_igv", "vanilla").is_analysable
+    assert not artifacts.is_complete("pdl1_igv", "vanilla")
+    summary = json.loads((directory / "collection.json").read_text())
+    assert summary["partial"] and summary["pending_seeds"] == [1]
+
+    collection_calls(monkeypatch, {0: "", 1: ""})
+    campaign.collect(target="pdl1_igv", arm="vanilla", force=False)
+    assert artifacts.is_complete("pdl1_igv", "vanilla")
+    assert not list(directory.glob(".collection-*"))
+    # Archived campaigns have protocols and outputs, but no new summary or manifest.
+    (directory / "collection.json").unlink()
+    (directory / "manifest.csv").unlink()
+    assert artifacts.is_complete("pdl1_igv", "vanilla")
+    (directory / ".collecting").touch()
+    assert not artifacts.is_complete("pdl1_igv", "vanilla")
+
+
+@pytest.mark.parametrize("state", ["pending", "RuntimeError: failed"])
+def test_pending_and_failed_seeds_are_incomplete(collection_setup, monkeypatch, state):
+    import json
+
+    from analysis import artifacts
+
+    directory = collection_setup()
+    collection_calls(monkeypatch, {0: "", 1: state})
+    done = campaign.collect_campaign("pdl1_igv", "vanilla")
+    assert done.n_designs == 1
+    assert done.n_pending + done.n_failed == 1
+    assert not artifacts.is_complete("pdl1_igv", "vanilla")
+    assert json.loads((directory / "collection.json").read_text())["partial"]
+
+
+def test_unsubmitted_seeds_count_toward_completion(collection_setup, monkeypatch):
+    from analysis import artifacts
+
+    collection_setup(count=3, submitted=[0, 1])
+    collection_calls(monkeypatch, {0: "", 1: ""})
+    done = campaign.collect_campaign("pdl1_igv", "vanilla")
+    assert done.n_unsubmitted == 1
+    assert not artifacts.is_complete("pdl1_igv", "vanilla")
+
+
+@pytest.mark.parametrize("existing", [False, True])
+def test_validation_failure_preserves_outputs(collection_setup, monkeypatch, existing):
+    from analysis import composition
+
+    directory = collection_setup()
+    collection_calls(monkeypatch, {0: "", 1: ""})
+    if existing:
+        campaign.collect_campaign("pdl1_igv", "vanilla")
+    before = snapshot(directory)
+
+    def invalid(path):
+        raise ValueError("Invalid backbone")
+
+    monkeypatch.setattr(composition.secondary_structure, "binder_composition", invalid)
+    with pytest.raises(ValueError, match="Invalid backbone"):
+        campaign.collect_campaign("pdl1_igv", "vanilla")
+    assert snapshot(directory) == before
+    assert not list(directory.glob(".collection-*"))
+
+
+def test_recollection_cannot_drop_previously_saved_seeds(collection_setup, monkeypatch):
+    directory = collection_setup()
+    collection_calls(monkeypatch, {0: "", 1: ""})
+    campaign.collect_campaign("pdl1_igv", "vanilla")
+    before = snapshot(directory)
+    collection_calls(monkeypatch, {0: "", 1: "results expired"})
+    with pytest.raises(ValueError, match="discard previously collected seeds"):
+        campaign.collect_campaign("pdl1_igv", "vanilla")
+    assert snapshot(directory) == before
+
+
+def test_publish_failure_restores_previous_collection(collection_setup, monkeypatch):
+    from pathlib import Path
+
+    directory = collection_setup()
+    collection_calls(monkeypatch, {0: "", 1: "pending"})
+    campaign.collect_campaign("pdl1_igv", "vanilla")
+    before = snapshot(directory)
+    collection_calls(monkeypatch, {0: "", 1: ""})
+    replace = Path.replace
+
+    def fail_install(path, target):
+        if path.parent.name == "outputs" and path.name == "all_results.parquet":
+            raise OSError("simulated disk error")
+        return replace(path, target)
+
+    monkeypatch.setattr(Path, "replace", fail_install)
+    with pytest.raises(OSError, match="simulated disk error"):
+        campaign.collect_campaign("pdl1_igv", "vanilla")
+    assert snapshot(directory) == before
+
+
+def test_ensure_collects_other_campaigns_after_failure(collection_setup, monkeypatch, capsys):
+    from types import SimpleNamespace
+
+    import modal
+    from analysis import artifacts
+
+    keys = list(campaign.TARGET_SPECS)[:2]
+    for key in keys:
+        collection_setup(target=key, count=1)
+    manifests = {key: pd.DataFrame({"seed": [0], "call_id": [key]}) for key in keys}
+    monkeypatch.setattr(campaign, "spawn_campaign", lambda target, *args: manifests[target])
+    monkeypatch.setattr(
+        modal.FunctionCall, "from_id", lambda call_id: SimpleNamespace(get=lambda **kw: None)
+    )
+    actual_collect = campaign.collect_campaign
+    attempted = []
+
+    def collect(target, arm):
+        attempted.append(target)
+        collection_calls(monkeypatch, {0: "failed" if target == keys[0] else ""})
+        return actual_collect(target, arm)
+
+    monkeypatch.setattr(campaign, "collect_campaign", collect)
+    campaign.ensure(keys, ["vanilla"], n_seeds=1, poll_seconds=0)
+    assert attempted == keys
+    assert not artifacts.is_complete(keys[0], "vanilla")
+    assert artifacts.is_complete(keys[1], "vanilla")
+    assert "1 campaign(s) could not be collected" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("damage", ["scores", "structure", "trace", "duplicates"])
+def test_complete_requires_matching_seed_coverage(collection_setup, monkeypatch, damage):
+    from analysis import artifacts
+
+    directory = collection_setup()
+    collection_calls(monkeypatch, {0: "", 1: ""})
+    campaign.collect_campaign("pdl1_igv", "vanilla")
+    assert artifacts.is_complete("pdl1_igv", "vanilla")
+    if damage == "structure":
+        (directory / "all_complexes" / "seed01.pdb").unlink()
+    else:
+        path = directory / ("step_trace.parquet" if damage == "trace" else "all_results.parquet")
+        frame = pd.read_parquet(path)
+        if damage == "duplicates":
+            frame = pd.concat([frame, frame.iloc[:1]], ignore_index=True)
+        else:
+            frame = frame.iloc[:1]
+        frame.to_parquet(path, index=False)
+    assert not artifacts.is_complete("pdl1_igv", "vanilla")
+
+
+def test_spawn_does_not_skip_partial_results(collection_setup, monkeypatch):
+    from typer.testing import CliRunner
+
+    collection_setup()
+    collection_calls(monkeypatch, {0: "", 1: "pending"})
+    campaign.collect_campaign("pdl1_igv", "vanilla")
+    submitted = []
+
+    def spawn(*args):
+        submitted.append(args)
+        return pd.DataFrame({"seed": [0, 1], "call_id": ["a", "b"]})
+
+    monkeypatch.setattr(campaign, "spawn_campaign", spawn)
+    result = CliRunner().invoke(
+        campaign.app, ["spawn", "--target", "pdl1_igv", "--arm", "vanilla", "--n-seeds", "2"]
+    )
+    assert result.exit_code == 0, result.output
+    assert len(submitted) == 1

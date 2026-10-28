@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 import json
+import shutil
 import time
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import Any
 
 import pandas as pd
@@ -94,13 +96,17 @@ def status(
     arms = [arm] if arm else None
     frame = artifacts.status_table(keys, arms)
     typer.echo(frame.to_string(index=False))
-    absent = artifacts.missing(keys, arms)
+    absent = [
+        (row.target, row.arm)
+        for row in frame.itertuples(index=False)
+        if not artifacts.is_complete(row.target, row.arm)
+    ]
     if absent:
-        typer.echo(f"\n{len(absent)} campaign(s) without results:")
+        typer.echo(f"\n{len(absent)} incomplete campaign(s):")
         for key, name in absent:
             typer.echo(f"  {key} / {name}")
     else:
-        typer.echo("\nEvery requested campaign has results. Nothing to run.")
+        typer.echo("\nEvery requested campaign is complete. Nothing to run.")
 
 
 def spawn_campaign(
@@ -184,10 +190,10 @@ def spawn(
         False, help="Return every step's predicted complex as a PDB."
     ),
 ) -> None:
-    """Submit a campaign unless its results table already exists."""
+    """Submit missing seeds unless the campaign is complete."""
     if not target or not arm:
         raise typer.BadParameter("Supply --target and --arm")
-    if artifacts.status(target, arm).has_results:
+    if artifacts.is_complete(target, arm):
         typer.echo(
             f"Results already present for {target} / {arm}: "
             f"{paths.campaign_results(target, arm)}\nNothing to do."
@@ -215,16 +221,16 @@ class Collected:
     n_failed: int
     n_trace_rows: int
     n_viable: int | None
+    n_unsubmitted: int = 0
 
 
-def _write_step_complexes(target: str, arm: str, seed: int, blob: bytes) -> None:
+def _write_step_complexes(directory: Path, blob: bytes) -> None:
     """Unpack logged complexes into PDB files numbered by optimization step."""
     from analysis.modal_app import unpack_structures
 
     structures = unpack_structures(blob)
     if not structures:
         return
-    directory = paths.campaign_step_complexes(target, arm, seed)
     directory.mkdir(parents=True, exist_ok=True)
     for step, pdb_text in enumerate(structures):
         (directory / f"step{step:03d}.pdb").write_text(pdb_text)
@@ -244,62 +250,140 @@ def collect_campaign(target: str, arm: str) -> Collected:
         )
 
     manifest = read_manifest(manifest_path, key="seed")
-    complexes = paths.campaign_complexes(target, arm)
-    complexes.mkdir(parents=True, exist_ok=True)
+    expected = artifacts.expected_seeds(target, arm)
+    if not set(manifest.seed).issubset(expected):
+        raise ValueError("Manifest seeds differ from the campaign protocol")
+    directory = paths.campaign_dir(target, arm)
+    with TemporaryDirectory(prefix=".collection-", dir=directory) as temporary:
+        staged = Path(temporary) / "outputs"
+        staged.mkdir()
+        done = _collect_staged(target, arm, manifest, expected, staged)
+        _publish_collection(directory, staged)
+    return done
 
+
+def _collect_staged(
+    target: str, arm: str, manifest: pd.DataFrame, expected: set[int], staged: Path
+) -> Collected:
+    """Build and validate a collection without changing published outputs."""
+    complexes = staged / "all_complexes"
+    complexes.mkdir()
+    (staged / "step_complexes").mkdir()
     records = []
     trace_rows: list[dict[str, object]] = []
     failures: list[str] = []
-    pending = 0
+    pending: list[int] = []
     for row, result, error in completed_jobs(manifest):
+        seed = int(row.seed)
         if error == "pending":
-            pending += 1
+            pending.append(seed)
             continue
         if error:
-            failures.append(f"seed {int(row.seed)}: {error}")
+            failures.append(f"seed {seed}: {error}")
             continue
         output = (
             result
             if isinstance(result, CampaignOutput)
-            else CampaignOutput.from_payload(result, seed=int(row.seed))
+            else CampaignOutput.from_payload(result, seed=seed)
         )
-        if output.complex_pdb:
-            (complexes / f"seed{int(row.seed):02d}.pdb").write_text(output.complex_pdb)
-        _write_step_complexes(target, arm, int(row.seed), output.step_complexes_gz)
+        if output.row["seed"] != seed:
+            raise ValueError(f"Result seed: expected {seed}, observed {output.row['seed']}")
+        if not output.complex_pdb:
+            raise ValueError(f"Missing complex structure for seed {seed}")
+        (complexes / f"seed{seed:02d}.pdb").write_text(output.complex_pdb)
+        _write_step_complexes(
+            staged / "step_complexes" / f"seed{seed:02d}", output.step_complexes_gz
+        )
         trace_rows.extend(output.trace)
         records.append(output.row)
 
     if not records:
-        raise RuntimeError(f"No finished calls yet for {target} / {arm} ({pending} pending).")
+        details = "; ".join(failures)
+        raise RuntimeError(
+            f"No successful calls for {target} / {arm} "
+            f"({len(pending)} pending, {len(failures)} failed). {details}"
+        )
 
     frame = pd.DataFrame(records).sort_values("seed")
-    frame.to_parquet(paths.campaign_results(target, arm), index=False)
-
+    previous = paths.campaign_results(target, arm)
+    if previous.is_file():
+        old_seeds = set(pd.read_parquet(previous, columns=["seed"]).seed)
+        if not old_seeds.issubset(set(frame.seed)):
+            raise ValueError(
+                "Recollection would discard previously collected seeds; keeping outputs"
+            )
+    results = staged / "all_results.parquet"
+    frame.to_parquet(results, index=False)
     trace = loss_trace.frame(trace_rows)
-    trace.to_parquet(paths.campaign_trace(target, arm), index=False)
-
-    table = composition.build(target, arm, complexes, paths.campaign_results(target, arm))
-
+    if set(trace.seed) != set(frame.seed):
+        raise ValueError("Trace and score seeds do not match")
+    trace.to_parquet(staged / "step_trace.parquet", index=False)
+    table = composition.build(target, arm, complexes, results)
+    unsubmitted = sorted(expected - set(manifest.seed))
     summary = {
         "target": target,
         "arm": arm,
         "n_success": int(len(frame)),
-        "n_pending": int(pending),
+        "n_pending": len(pending),
+        "pending_seeds": pending,
         "n_failed": len(failures),
         "failures": failures,
-        "partial": pending > 0 or bool(failures),
+        "unsubmitted_seeds": unsubmitted,
+        "partial": set(frame.seed) != expected,
         "trace_rows": int(len(trace)),
         "n_viable": int(composition.viable(table).sum()),
     }
+    (staged / "collection.json").write_text(json.dumps(summary, indent=2) + "\n")
     return Collected(
         target=target,
         arm=arm,
         n_designs=int(len(frame)),
-        n_pending=int(pending),
+        n_pending=len(pending),
         n_failed=len(failures),
         n_trace_rows=int(len(trace)),
         n_viable=summary["n_viable"],
+        n_unsubmitted=len(unsubmitted),
     )
+
+
+def _publish_collection(directory: Path, staged: Path) -> None:
+    """Replace validated outputs, restoring the old collection on write errors.
+
+    The marker prevents an interrupted replacement from looking complete. The
+    manifest and protocol stay in place; only collection outputs are replaced.
+    """
+    names = (
+        "all_complexes",
+        "step_complexes",
+        "step_trace.parquet",
+        "all_results.parquet",
+        "collection.json",
+    )
+    backup = staged.parent / "previous"
+    backup.mkdir()
+    marker = directory / ".collecting"
+    marker.touch()
+    installed = []
+    try:
+        for name in names:
+            destination = directory / name
+            if destination.exists():
+                destination.replace(backup / name)
+            (staged / name).replace(destination)
+            installed.append(name)
+    except BaseException:
+        for name in reversed(names):
+            destination = directory / name
+            if name in installed:
+                if destination.is_dir():
+                    shutil.rmtree(destination)
+                else:
+                    destination.unlink()
+            if (backup / name).exists():
+                (backup / name).replace(destination)
+        marker.unlink()
+        raise
+    marker.unlink()
 
 
 @app.command()
@@ -311,7 +395,7 @@ def collect(
     """Gather one campaign's finished calls into its tables and structures."""
     if not target or not arm:
         raise typer.BadParameter("Supply --target and --arm")
-    if artifacts.status(target, arm).is_analysable and not force:
+    if artifacts.is_complete(target, arm) and not force:
         typer.echo(
             f"Results already present: {paths.campaign_results(target, arm)}\n"
             f"Pass --force to recollect."
@@ -319,7 +403,8 @@ def collect(
         raise typer.Exit(0)
     done = collect_campaign(target, arm)
     typer.echo(
-        f"Collected {done.n_designs} designs ({done.n_pending} pending) for "
+        f"Collected {done.n_designs} designs ({done.n_pending} pending, "
+        f"{done.n_failed} failed, {done.n_unsubmitted} unsubmitted) for "
         f"{target} / {arm}\n"
         f"  {paths.campaign_results(target, arm)}\n"
         f"  {paths.campaign_trace(target, arm)} ({done.n_trace_rows} step rows)"
@@ -346,7 +431,7 @@ def ensure(
     steps: int = SGD_STEPS,
     poll_seconds: int = POLL_SECONDS,
 ) -> pd.DataFrame:
-    """Submit campaigns missing scores or structures, then poll and collect them.
+    """Submit missing seeds in incomplete campaigns, then poll and collect them.
 
     Collect each campaign once all its saved calls have resolved.
     """
@@ -359,14 +444,14 @@ def ensure(
         )
 
     pairs = [(target, arm) for target in target_keys for arm in arms]
-    missing = [pair for pair in pairs if not composition.is_available(*pair)]
+    missing = [pair for pair in pairs if not artifacts.is_complete(*pair)]
     if not missing:
-        print(f"All {len(pairs)} campaigns already present. Nothing to run.")
+        print(f"All {len(pairs)} campaigns complete. Nothing to run.")
         return artifacts.status_table(target_keys, arms)
 
     print(
-        f"{len(missing)} of {len(pairs)} campaigns missing, "
-        f"{len(missing) * n_seeds} designs at {steps} steps each."
+        f"{len(missing)} of {len(pairs)} campaigns incomplete, "
+        f"{n_seeds} requested designs per campaign at {steps} steps each."
     )
 
     import modal
@@ -377,10 +462,11 @@ def ensure(
         calls[(target, arm)] = {
             int(row.seed): modal.FunctionCall.from_id(row.call_id) for row in manifest.itertuples()
         }
-        print(f"  spawned {target} / {arm}: {len(manifest)} calls", flush=True)
+        print(f"  tracking {target} / {arm}: {len(manifest)} calls", flush=True)
 
     resolved: dict[tuple[str, str], dict[int, str]] = {pair: {} for pair in missing}
     remaining = list(missing)
+    collection_failures: dict[tuple[str, str], str] = {}
     started = time.time()
     while remaining:
         for pair in list(remaining):
@@ -391,13 +477,17 @@ def ensure(
                 if state != "pending":
                     resolved[pair][seed] = state
             if len(resolved[pair]) == len(calls[pair]):
-                done = collect_campaign(*pair)
-                print(
-                    f"  [{(time.time() - started) / 60:5.1f} min] collected "
-                    f"{done.target} / {done.arm}: {done.n_designs} designs, "
-                    f"{done.n_viable} viable, {done.n_failed} failed",
-                    flush=True,
-                )
+                try:
+                    done = collect_campaign(*pair)
+                except Exception as error:  # noqa: BLE001
+                    collection_failures[pair] = f"{type(error).__name__}: {error}"
+                else:
+                    print(
+                        f"  [{(time.time() - started) / 60:5.1f} min] collected "
+                        f"{done.target} / {done.arm}: {done.n_designs} designs, "
+                        f"{done.n_viable} viable, {done.n_failed} failed",
+                        flush=True,
+                    )
                 remaining.remove(pair)
         if remaining:
             seen = sum(len(v) for v in resolved.values())
@@ -419,6 +509,10 @@ def ensure(
         print(f"\n{len(failures)} design(s) failed:")
         for key, message in sorted(failures.items()):
             print(f"  {key}: {message}")
+    if collection_failures:
+        print(f"\n{len(collection_failures)} campaign(s) could not be collected:")
+        for pair, message in sorted(collection_failures.items()):
+            print(f"  {pair}: {message}")
     return artifacts.status_table(target_keys, arms)
 
 
