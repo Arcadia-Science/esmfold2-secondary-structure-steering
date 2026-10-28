@@ -1,16 +1,17 @@
 """Measure secondary structure from saved campaign complexes without caching results."""
 
 from __future__ import annotations
+from collections.abc import Mapping
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 
-from analysis import paths, secondary_structure
+from analysis import paths, secondary_structure, targets
 
 SCORE_COLUMNS = {
-    "critic_iptm": "iptm (0-1)",
-    "critic_plddt_binder": "binder pLDDT (0-100)",
+    "critic_iptm_by_model": "iptm (0-1)",
+    "critic_plddt_binder_by_model": "binder pLDDT (0-100)",
 }
 
 MIN_SHEET_FRACTION = 0.40
@@ -23,11 +24,37 @@ VIABILITY_COLUMNS = (
 )
 
 
+def reporting_scores(frame: pd.DataFrame) -> pd.DataFrame:
+    """Select held-out confidence scores; never fall back to the structure model."""
+    missing = set(SCORE_COLUMNS) - set(frame.columns)
+    if missing:
+        raise ValueError(
+            f"Missing per-model scores for {targets.REPORTING_CRITIC}: {sorted(missing)}"
+        )
+    scores = frame[["seed"]].copy()
+    for column, label in SCORE_COLUMNS.items():
+        values = frame[column].map(
+            lambda record: record.get(targets.REPORTING_CRITIC)
+            if isinstance(record, Mapping)
+            else None
+        )
+        values = pd.to_numeric(values, errors="coerce")
+        invalid = ~np.isfinite(values)
+        if invalid.any():
+            seeds = frame.loc[invalid, "seed"].tolist()
+            raise ValueError(
+                f"Missing or non-finite {column} for {targets.REPORTING_CRITIC}, seeds {seeds}"
+            )
+        scores[label] = values
+    return scores
+
+
 def build(target_key: str, arm: str, complexes: Path, results: Path) -> pd.DataFrame:
     """Measure every predicted complex and join to the campaign's confidence scores.
 
     ``complexes`` holds ``seedNN.pdb`` files with the target as chain A and the
-    binder as chain B. ``results`` is the campaign's per-design table.
+    binder as chain B, predicted by the Fast structure model. Confidence comes
+    from REPORTING_CRITIC's per-model entries in the campaign's per-design table.
     """
     frame = pd.read_parquet(results) if results.suffix == ".parquet" else pd.read_csv(results)
     rows = []
@@ -48,7 +75,7 @@ def build(target_key: str, arm: str, complexes: Path, results: Path) -> pd.DataF
     if frame.seed.duplicated().any() or sorted(observed) != sorted(frame.seed.tolist()):
         raise ValueError(f"Structures and score rows do not match: {target_key}/{arm}")
 
-    scores = frame[["seed", *SCORE_COLUMNS]].rename(columns=SCORE_COLUMNS)
+    scores = reporting_scores(frame)
     measured = measured.merge(scores, on="seed", how="left")
 
     return measured.assign(target=target_key, arm=arm).sort_values("seed").reset_index(drop=True)

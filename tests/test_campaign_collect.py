@@ -5,7 +5,7 @@ import re
 
 import pandas as pd
 import pytest
-from analysis import campaign
+from analysis import campaign, targets
 from analysis.results import CampaignOutput
 
 
@@ -18,7 +18,8 @@ def a_payload() -> dict[str, object]:
         "arm_label": "Vanilla",
         "critic_iptm": 0.94,
         "critic_plddt_binder": 87.4,
-        "critic_iptm_by_model": {"ESMFold2-Experimental-Fast": 0.94},
+        "critic_iptm_by_model": {targets.REPORTING_CRITIC: 0.94},
+        "critic_plddt_binder_by_model": {targets.REPORTING_CRITIC: 87.4},
         "schedule": {"key": "vanilla", "waypoints": [{"step": 0, "weights": {}}]},
         "step_trace": [{"step (index)": 0}],
         "complex_pdb": "ATOM ...",

@@ -5,7 +5,7 @@ from __future__ import annotations
 import pandas as pd
 import pytest
 import torch
-from analysis import composition, confidence
+from analysis import composition, confidence, targets
 
 TARGET_LENGTH = 40
 BINDER_LENGTH = 10
@@ -133,3 +133,52 @@ def test_viability_refuses_a_frame_missing_binder_plddt() -> None:
     frame = pd.DataFrame([a_design(0.10, 0.30, 0.80, 85.0)]).drop(columns=["binder pLDDT (0-100)"])
     with pytest.raises(KeyError, match="binder pLDDT"):
         composition.viable(frame)
+
+
+def test_reporting_scores_use_non_fast_model_for_each_seed():
+    frame = pd.DataFrame(
+        {
+            "seed": [7, 2],
+            "critic_iptm": [0.99, 0.1],
+            "critic_plddt_binder": [99, 10],
+            "critic_iptm_by_model": [
+                {targets.PRIMARY_CRITIC: 0.99, targets.REPORTING_CRITIC: 0.7},
+                {targets.PRIMARY_CRITIC: 0.1, targets.REPORTING_CRITIC: 0.95},
+            ],
+            "critic_plddt_binder_by_model": [
+                {targets.PRIMARY_CRITIC: 99, targets.REPORTING_CRITIC: 75},
+                {targets.PRIMARY_CRITIC: 10, targets.REPORTING_CRITIC: 90},
+            ],
+        }
+    )
+    scores = composition.reporting_scores(frame).assign(**{"sheet (fraction 0-1)": 0.5})
+    assert scores.seed.tolist() == [7, 2]
+    assert scores["iptm (0-1)"].tolist() == [0.7, 0.95]
+    assert scores["binder pLDDT (0-100)"].tolist() == [75, 90]
+    assert composition.viable(scores).tolist() == [False, True]
+
+
+@pytest.mark.parametrize("column", composition.SCORE_COLUMNS)
+@pytest.mark.parametrize("bad_score", [None, float("nan"), float("inf"), "invalid"])
+def test_reporting_refuses_missing_or_invalid_model_scores(column, bad_score):
+    frame = pd.DataFrame(
+        {
+            "seed": [7],
+            "critic_iptm": [0.99],
+            "critic_plddt_binder": [99],
+            "critic_iptm_by_model": [{targets.REPORTING_CRITIC: 0.9}],
+            "critic_plddt_binder_by_model": [{targets.REPORTING_CRITIC: 90}],
+        }
+    )
+    frame.at[0, column] = {targets.PRIMARY_CRITIC: 0.99, targets.REPORTING_CRITIC: bad_score}
+    with pytest.raises(ValueError, match=r"seeds \[7\]"):
+        composition.reporting_scores(frame)
+    frame.at[0, column] = {targets.PRIMARY_CRITIC: 0.99}
+    with pytest.raises(ValueError, match=r"seeds \[7\]"):
+        composition.reporting_scores(frame)
+
+
+def test_reporting_refuses_legacy_scalar_scores_without_per_model_scores():
+    frame = pd.DataFrame({"seed": [0], "critic_iptm": [0.99], "critic_plddt_binder": [99]})
+    with pytest.raises(ValueError, match="Missing per-model scores"):
+        composition.reporting_scores(frame)

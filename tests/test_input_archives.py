@@ -17,9 +17,15 @@ def test_composition_ignores_stale_measurements_and_remeasures(tmp_path, monkeyp
     pd.DataFrame({"seed": [0], "helix (fraction 0-1)": [999]}).to_parquet(
         folder / "composition.parquet"
     )
-    pd.DataFrame({"seed": [0], "critic_iptm": [0.9], "critic_plddt_binder": [90]}).to_parquet(
-        paths.campaign_results("test", "vanilla")
-    )
+    pd.DataFrame(
+        {
+            "seed": [0],
+            "critic_iptm": [0.9],
+            "critic_plddt_binder": [90],
+            "critic_iptm_by_model": [{targets.REPORTING_CRITIC: 0.7}],
+            "critic_plddt_binder_by_model": [{targets.REPORTING_CRITIC: 75}],
+        }
+    ).to_parquet(paths.campaign_results("test", "vanilla"))
     from types import SimpleNamespace
 
     measured = SimpleNamespace(
@@ -28,6 +34,9 @@ def test_composition_ignores_stale_measurements_and_remeasures(tmp_path, monkeyp
     monkeypatch.setattr(composition.secondary_structure, "binder_composition", lambda _: measured)
     result = composition.load("test", "vanilla")
     assert result.loc[0, "helix (fraction 0-1)"] == 0.2
+    assert result.loc[0, "iptm (0-1)"] == 0.7
+    assert result.loc[0, "binder pLDDT (0-100)"] == 75
+    assert not composition.viable(result).iloc[0]
     measured.helix_fraction = 0.1
     assert composition.load("test", "vanilla").loc[0, "helix (fraction 0-1)"] == 0.1
     (structures / "seed01.pdb").write_text("unexpected seed")

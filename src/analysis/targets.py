@@ -271,11 +271,16 @@ The publication also uses the onset and withdrawal scans below.
 """
 
 PRIMARY_CRITIC = "ESMFold2-Experimental-Fast-Cutoff2025"
+"""Source of saved final structures and legacy scalar scores in worker outputs."""
+
+REPORTING_CRITIC = "ESMFold2-Experimental-Cutoff2025"
+"""Confidence evaluator, excluded from optimization and trajectory selection."""
+
 CRITIC_MODELS = (
     "ESMFold2-Experimental-Fast",
     PRIMARY_CRITIC,
     "ESMFold2-Experimental",
-    "ESMFold2-Experimental-Cutoff2025",
+    REPORTING_CRITIC,
 )
 
 N_SEEDS = 30
