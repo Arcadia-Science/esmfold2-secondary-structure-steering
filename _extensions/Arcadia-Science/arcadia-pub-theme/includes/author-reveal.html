@@ -15,13 +15,7 @@
   initAuthorReveal();
 
   function initAuthorReveal() {
-    require.config({
-      paths: {
-        'js-yaml': 'https://cdnjs.cloudflare.com/ajax/libs/js-yaml/4.1.0/js-yaml.min'
-      }
-    });
-
-    require(['js-yaml'], function (jsyaml) {
+    import('https://cdnjs.cloudflare.com/ajax/libs/js-yaml/4.1.0/js-yaml.mjs').then(function (jsyaml) {
       // Function to get last name from full name
       function getLastName(fullName) {
         const nameParts = fullName.trim().split(' ');
