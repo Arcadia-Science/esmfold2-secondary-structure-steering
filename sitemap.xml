@@ -1,27 +1,31 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
   <url>
-    <loc>https://Arcadia-Science.github.io/esmfold2-secondary-structure-steering/index_v1.0.html</loc>
-    <lastmod>2026-10-29T19:50:13.462Z</lastmod>
-  </url>
-  <url>
-    <loc>https://Arcadia-Science.github.io/esmfold2-secondary-structure-steering/examples/demo.html</loc>
-    <lastmod>2026-10-29T19:50:13.439Z</lastmod>
-  </url>
-  <url>
-    <loc>https://Arcadia-Science.github.io/esmfold2-secondary-structure-steering/pages/FAQ.html</loc>
-    <lastmod>2026-10-29T19:50:13.463Z</lastmod>
-  </url>
-  <url>
-    <loc>https://Arcadia-Science.github.io/esmfold2-secondary-structure-steering/pages/CONTRIBUTING.html</loc>
-    <lastmod>2026-10-29T19:50:13.462Z</lastmod>
-  </url>
-  <url>
-    <loc>https://Arcadia-Science.github.io/esmfold2-secondary-structure-steering/pages/SETUP.html</loc>
-    <lastmod>2026-10-29T19:50:13.463Z</lastmod>
+    <loc>https://Arcadia-Science.github.io/esmfold2-secondary-structure-steering/index_v1.1.html</loc>
+    <lastmod>2026-10-29T21:46:40.177Z</lastmod>
   </url>
   <url>
     <loc>https://Arcadia-Science.github.io/esmfold2-secondary-structure-steering/index.html</loc>
-    <lastmod>2026-10-29T19:50:13.451Z</lastmod>
+    <lastmod>2026-10-29T21:46:40.158Z</lastmod>
+  </url>
+  <url>
+    <loc>https://Arcadia-Science.github.io/esmfold2-secondary-structure-steering/pages/SETUP.html</loc>
+    <lastmod>2026-10-29T21:46:40.179Z</lastmod>
+  </url>
+  <url>
+    <loc>https://Arcadia-Science.github.io/esmfold2-secondary-structure-steering/pages/CONTRIBUTING.html</loc>
+    <lastmod>2026-10-29T21:46:40.177Z</lastmod>
+  </url>
+  <url>
+    <loc>https://Arcadia-Science.github.io/esmfold2-secondary-structure-steering/pages/FAQ.html</loc>
+    <lastmod>2026-10-29T21:46:40.179Z</lastmod>
+  </url>
+  <url>
+    <loc>https://Arcadia-Science.github.io/esmfold2-secondary-structure-steering/examples/demo.html</loc>
+    <lastmod>2026-10-29T21:46:40.148Z</lastmod>
+  </url>
+  <url>
+    <loc>https://Arcadia-Science.github.io/esmfold2-secondary-structure-steering/index_v1.0.html</loc>
+    <lastmod>2026-10-29T21:46:40.168Z</lastmod>
   </url>
 </urlset>
