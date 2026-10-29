@@ -149,6 +149,9 @@ SCAN_LEGEND_ANCHOR = (0.5, -0.42)
 PANEL_SIZE_INCHES = (6.8, 5.4)
 """Default figure size for individual panels, in inches."""
 
+WIDE_PANEL_SIZE_INCHES = (10.0, 5.4)
+"""Figure size for panels stacked at full text width, in inches."""
+
 
 @dataclass(frozen=True)
 class State:
@@ -418,7 +421,7 @@ def scan_violin(designs: pd.DataFrame, arms: list[str], metric: str) -> plt.Figu
     spec = METRICS[metric]
     scaled = {key: plt.rcParams[key] * FONT_SCALE for key in FONT_SIZE_KEYS}
     with plt.rc_context(scaled):
-        figure, axis = plt.subplots(figsize=PANEL_SIZE_INCHES)
+        figure, axis = plt.subplots(figsize=WIDE_PANEL_SIZE_INCHES)
         values = [designs.loc[designs["arm"] == arm, spec.column].to_numpy() for arm in arms]
         if any(len(group) == 0 for group in values):
             raise ValueError("every steering weight needs at least one design")
@@ -797,8 +800,8 @@ class SwitchNotation:
     never: str
 
 
-ONSET_NOTATION = SwitchNotation(prefix="from", baseline="unsteered", never="unsteered")
-RELEASE_NOTATION = SwitchNotation(prefix="until", baseline="unsteered", never="always")
+ONSET_NOTATION = SwitchNotation(prefix="From", baseline="Unsteered", never="Unsteered")
+RELEASE_NOTATION = SwitchNotation(prefix="Until", baseline="Unsteered", never="Always")
 
 
 def _switch_label(notation: SwitchNotation, step: int, baseline: int, never: int) -> str:
@@ -845,7 +848,6 @@ def _schedule_traces(
     ramp = dict(zip(by_strength, _scan_ramp(len(by_strength)), strict=True))
 
     endpoints: list[float] = []
-    colours: list[str] = []
     for step in drawn:
         subset = trace[trace["arm"] == scan[step]]
         if subset.empty:
@@ -860,7 +862,6 @@ def _schedule_traces(
             zorder=3,
         )
         endpoints.append(float(median.to_numpy()[-1]))
-        colours.append(colour)
         if step not in (baseline, never):
             axis.plot(
                 [step],
@@ -875,12 +876,12 @@ def _schedule_traces(
 
     last_step = float(trace["step (index)"].max())
     placed = _spread_labels(endpoints, LABEL_MIN_GAP_FRACTION, (0.0, SCAN_TRACE_CEILING))
-    for step, height, colour in zip(drawn, placed, colours, strict=True):
+    for step, height in zip(drawn, placed, strict=True):
         axis.text(
             last_step * 1.03,
             height,
             _switch_label(notation, step, baseline, never),
-            color=colour,
+            color="black",
             va="center",
             ha="left",
             fontsize=plt.rcParams["xtick.labelsize"],
@@ -890,7 +891,7 @@ def _schedule_traces(
     axis.set_xticks([tick for tick in axis.get_xticks() if 0 <= tick <= last_step])
     axis.set_ylim(0.0, SCAN_TRACE_CEILING)
     axis.set_xlabel("Optimization step (index)")
-    axis.set_ylabel(f"Median {spec.axis_label}")
+    axis.set_ylabel(f"Median {spec.axis_label[:1].lower()}{spec.axis_label[1:]}")
     apc.mpl.style_plot(axis)
     figure.tight_layout(pad=SCAN_TIGHT_PAD)
     return figure
@@ -1054,11 +1055,9 @@ STACK_EDGE_WIDTH = 0.8
 
 STACK_BAR_WIDTH = 0.7
 NATURAL_LABEL = "Natural\nproteins"
-STACK_TICK_SCALE = 0.72
-"""Additional tick-label font scale for stacked-composition panels."""
 
-LEGEND_BELOW_AXES = (0.5, -0.36)
-"""Legend anchor below the axes, in axes coordinates."""
+LEGEND_ABOVE_AXES = (0.5, 1.02)
+"""Legend anchor above the axes, in axes coordinates."""
 
 
 def composition_stack(
@@ -1070,7 +1069,6 @@ def composition_stack(
     count in every arm.
     """
     scaled = {key: plt.rcParams[key] * FONT_SCALE for key in FONT_SIZE_KEYS}
-    scaled["xtick.labelsize"] = scaled["xtick.labelsize"] * STACK_TICK_SCALE
     with plt.rc_context(scaled):
         return _composition_stack(designs, target, arms, natural)
 
@@ -1102,9 +1100,8 @@ def _composition_stack(
 def composition_means(means: pd.DataFrame) -> plt.Figure:
     """Draw precomputed state means, with the natural reference first."""
     scaled = {key: plt.rcParams[key] * FONT_SCALE for key in FONT_SIZE_KEYS}
-    scaled["xtick.labelsize"] *= STACK_TICK_SCALE
     with plt.rc_context(scaled):
-        figure, axis = plt.subplots(figsize=PANEL_SIZE_INCHES)
+        figure, axis = plt.subplots(figsize=WIDE_PANEL_SIZE_INCHES)
         return _composition_means(means, figure, axis)
 
 
@@ -1141,8 +1138,8 @@ def _composition_means(means, figure, axis) -> plt.Figure:
     axis.set_ylabel("Mean chain in each state (0–1)")
     apc.mpl.style_plot(axis, categorical_axes="x")
     axis.legend(
-        loc="upper center",
-        bbox_to_anchor=LEGEND_BELOW_AXES,
+        loc="lower center",
+        bbox_to_anchor=LEGEND_ABOVE_AXES,
         ncol=len(STATES),
         frameon=False,
         handlelength=0.8,
@@ -1287,7 +1284,7 @@ def _trace_summary(spec, trace, arms) -> plt.Figure:
             last_step * 1.02,
             height,
             ARM_LABELS[arm],
-            color=ARM_COLORS[arm],
+            color="black",
             va="center",
             ha="left",
             fontsize=plt.rcParams["xtick.labelsize"],
