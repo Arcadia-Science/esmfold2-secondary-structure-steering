@@ -37,13 +37,7 @@
   }
 
   function initCitationBox() {
-    require.config({
-      paths: {
-        'js-yaml': 'https://cdnjs.cloudflare.com/ajax/libs/js-yaml/4.1.0/js-yaml.min'
-      }
-    });
-
-    require(['js-yaml'], function (jsyaml) {
+    import('https://cdnjs.cloudflare.com/ajax/libs/js-yaml/4.1.0/js-yaml.mjs').then(function (jsyaml) {
 
       // Add citation box template to the document
       const template = document.getElementById('citation-box-template');
