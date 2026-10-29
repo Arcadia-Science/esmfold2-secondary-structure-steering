@@ -10,10 +10,7 @@ The publication is hosted at [this URL](https://arcadia-science.github.io/esmfol
 - `data/campaigns`: campaign structures, model scores, traces and protocols. Not tracked.
 - `data/reference`: frozen search results, entry metadata and RCSB coordinates. Not tracked.
 
-Campaign outputs and frozen natural-reference inputs are archived on
-[Zenodo](https://doi.org/10.5281/zenodo.23542792) and downloaded automatically when
-needed. Analysis recalculates secondary structure, reference selection and summaries
-from those inputs.
+Campaign outputs and frozen natural-reference inputs are archived on [Zenodo](https://doi.org/10.5281/zenodo.23542792) and downloaded automatically when needed. Downloads first try a [public S3 mirror](https://2026-esmfold2-secondary-structure-steering.s3.us-west-1.amazonaws.com/) and fall back to Zenodo if S3 is unavailable. The mirror contains identical copies of both archives and the archive README; no AWS credentials are required. Zenodo remains the archival source. Analysis recalculates secondary structure, reference selection and summaries from those inputs.
 
 ## Reproduce
 

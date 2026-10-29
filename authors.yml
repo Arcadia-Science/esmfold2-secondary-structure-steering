@@ -1,31 +1,21 @@
-# Provisional. The Publishing Team supplies the final `authors.yml` (and
-# `CITATION.cff`) from the Release Center of the AirTable dashboard once
-# contributor roles are assigned. See developer-docs/PUBLISHING_GUIDE.md.
-#
-# For roles, choose from:
-#
-# - conceptualization
-# - formal analysis
-# - investigation
-# - methodology
-# - software
-# - supervision
-# - writing
-# - critical feedback
-# - data curation
-# - editing
-# - project administration
-# - resources
-# - validation
-# - visualization
 authors:
-  - name: Evan Kiefl
-    orcid: 0000-0002-6473-0921
-    roles:
-      - Conceptualization
-      - Formal Analysis
-      - Investigation
-      - Methodology
-      - Software
-      - Visualization
-      - Writing
+- name: James R. Golden
+  orcid: 0000-0002-9411-9680
+  roles:
+  - Supervision
+  - Validation
+- name: Rahul Khorana
+  orcid: 0000-0001-8795-1623
+  roles:
+  - Critical feedback
+- name: Evan Kiefl
+  orcid: 0000-0002-6473-0921
+  roles:
+  - Conceptualization
+  - Experimental design
+  - Formal analysis
+  - Investigation
+  - Methodology
+  - Software
+  - Visualization
+  - Writing
