@@ -1,1 +1,1 @@
-Sitemap: https://Arcadia-Science.github.io/notebook-pub-template/sitemap.xml
+Sitemap: https://Arcadia-Science.github.io/esmfold2-secondary-structure-steering/sitemap.xml

@@ -1,0 +1,31 @@
+cff-version: 1.2.0
+message: If you use this software, please cite the associated publication.
+title: Steering secondary structure in ESMFold2 binder design
+doi: 10.57844/arcadia-x722-5614
+authors:
+- family-names: Golden
+  given-names: James
+  affiliation: Arcadia Science
+  orcid: https://orcid.org/0000-0002-9411-9680
+- family-names: Khorana
+  given-names: Rahul
+  affiliation: Arcadia Science
+  orcid: https://orcid.org/0000-0001-8795-1623
+- family-names: Kiefl
+  given-names: Evan
+  affiliation: Arcadia Science
+  orcid: https://orcid.org/0000-0002-6473-0921
+preferred-citation:
+  title: Steering secondary structure in ESMFold2 binder design
+  type: article
+  doi: 10.57844/arcadia-x722-5614
+  authors:
+  - family-names: Golden
+    given-names: James
+    affiliation: Arcadia Science
+    orcid: https://orcid.org/0000-0002-9411-9680
+  - family-names: Kiefl
+    given-names: Evan
+    affiliation: Arcadia Science
+    orcid: https://orcid.org/0000-0002-6473-0921
+  year: 2026
