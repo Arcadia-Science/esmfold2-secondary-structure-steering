@@ -1,29 +1,16 @@
-# Notebook Publication Template
+# Steering secondary structure in ESMFold2 binder design
 
-This repo is a template for Jupyter notebook publications. The template produces a publication rendered and hosted by Quarto, which can be viewed at [this demo URL](https://arcadia-science.github.io/notebook-pub-template/).
+This code repository contains or points to all materials required for creating and hosting the publication entitled, *"Steering secondary structure in ESMFold2 binder design"*.
 
-## Template Documentation
-
-All the learning resources for this template can be found in `developer-docs/`.
-
-- [Quickstart Guide](developer-docs/QUICKSTART.md) - **The most efficient way to get started** is to follow this guide (the rest can wait)
-- [Environment Setup Guide](developer-docs/ENVIRONMENT_SETUP.md) - How to set up your development environment
-- [Publishing Guide](developer-docs/PUBLISHING_GUIDE.md) - How to publish your notebook publication
-- [Template Architecture](developer-docs/TEMPLATE_ARCHITECTURE.md) - Understanding the template's structure
-
----
-
-**NOTE: When ready to publish, fill in the information below, then delete this line and everything above it.**
-
-# [PUB-TITLE]
-
-This code repository contains or points to all materials required for creating and hosting the publication entitled, *"[PUB-TITLE]"*.
-
-The publication is hosted at [this URL](https://arcadia-science.github.io/[REPO-NAME]/).
+The publication is hosted at [this URL](https://arcadia-science.github.io/esmfold2-secondary-structure-steering/).
 
 ## Data Description
 
-[DESCRIPTION OF THE DATA]
+- `data/targets`: tracked target sequences and experimental coordinates.
+- `data/campaigns`: campaign structures, model scores, traces and protocols. Not tracked.
+- `data/reference`: frozen search results, entry metadata and RCSB coordinates. Not tracked.
+
+Campaign outputs and frozen natural-reference inputs are archived on [Zenodo](https://doi.org/10.5281/zenodo.23542792) and downloaded automatically when needed. Downloads first try a [public S3 mirror](https://2026-esmfold2-secondary-structure-steering.s3.us-west-1.amazonaws.com/) and fall back to Zenodo if S3 is unavailable. The mirror contains identical copies of both archives and the archive README; no AWS credentials are required. Zenodo remains the archival source. Analysis recalculates secondary structure, reference selection and summaries from those inputs.
 
 ## Reproduce
 

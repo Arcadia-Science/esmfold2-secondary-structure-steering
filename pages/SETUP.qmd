@@ -65,6 +65,21 @@ make preview
 
 This will open a local instance of the publication in your default browser.
 
+## Generate model outputs
+
+`make execute` measures preserved model outputs and never launches GPU work. To generate new designs you need a configured Modal account with access to the
+ESMFold2/ESMC models. Deploy the shared app, then spawn and collect a campaign:
+
+```bash
+modal deploy -m analysis.modal_app
+
+# As an example
+python -m analysis.campaign spawn --target pdl1_igv --arm vanilla
+python -m analysis.campaign collect --target pdl1_igv --arm vanilla
+```
+
+GPU runs cost compute and are not seed-reproducible, so a new run is a new sample rather than a replacement for the reported designs.
+
 ## Modify
 
 To modify or extend any analyses, open up `index.ipynb` with Jupyter or your favorite IDE. To preview changes as you modify the notebook, run `make preview` again and leave the command running. As you make changes to the notebook, the preview site will automatically reload.

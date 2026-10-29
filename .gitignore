@@ -178,3 +178,32 @@ cython_debug/
 /*_files/
 
 **/*.quarto_ipynb
+
+# Campaign artifacts are fetched from the Zenodo deposit or regenerated on a
+# GPU; they are not source. Target FASTA and structures under data/targets are
+# tracked, because they are small and are inputs rather than outputs.
+# Nothing here is tracked. The campaign tables are deposited and fetched on
+# first execution, because designing them needs GPUs and money and the loop
+# is not seed-reproducible, so a rerun gives different designs rather than
+# these ones. analysis.deposit does the fetching.
+data/campaigns/*
+!data/campaigns/.gitkeep
+data/derived/*
+!data/derived/.gitkeep
+# Nothing here is tracked. The reference set is derived from a recorded RCSB
+# query and public coordinates, so a reader reproduces it rather than receiving
+# it: analysis.rcsb.build runs when the table is absent. Shipping it would mean
+# shipping something the notebook can and should derive.
+data/reference/*
+!data/reference/.gitkeep
+
+# Local exploratory work and scientific planning notes.
+/data/exploratory/
+/exploratory/
+/scientific-direction.md
+/structural-analysis-plan.md
+
+# Jupyter real-time-collaboration state, written by the server when a client
+# opens a notebook. Local session bookkeeping, not a project artifact.
+.jupyter/
+.jupyter_ystore.db
